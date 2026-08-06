@@ -8,12 +8,15 @@ with timestamps, releases, pull requests, languages, commit activity —
 for every repository you own or administer. Stdlib Python and `gh`, no
 install step, no service to sign up for, no data leaving your machine.
 
-<img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over 35 repositories: the traffic view charts daily views and clones as bar graphs, pressing t widens the timeframe from the last 14 days to all stored history, the top-repos view cycles its ranking criterion to forks, the repo table scrolls and then filters live to four repositories by typing /react, the anomaly view lists MAD-scored traffic spikes and filters down to the extreme ones, the content funnel breaks views down by page category, the history store view shows daily series since its epoch plus stars per month, and the demo ends back on the traffic view"/>
+<img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over 98 repositories. The traffic view opens on daily views and clones as bar charts. The audience view classifies each repo as audience, mixed, crawler or low-signal from its clones-per-unique-visitor ratio, and pressing ? opens a derivation overlay giving the formula, weights, thresholds and withheld components behind that score. The attribution view lists what moved and the release or push that plausibly caused it, tiered direct, coupled, account, dip, unexplained and no-effect; space opens one finding in full - a dip on the 6th of August with no cause recorded in the store, its daily clone series, the median, MAD, mean absolute deviation and z-score the tier rests on, and what else was true that day. The deltas view shows signed windowed change and per-day rate, and space opens momentum: the daily level, the day-over-day derivative around a zero line, and a fitted slope reading clones falling 1.15 per day and decelerating. The anomaly view is a repo-by-day heatmap above a sortable list of account events, and tab then space opens one - the 30th of July, five repos, leather spiking to a modified z-score of 81.6 on 308 clones against a median of 6, attributed to 8 commits that day. The funnel view shades each repo by its own busiest content category with a depth column, and space opens that repo's actual pages with views and uniques. The demo closes on the repo table and a repo drilldown, showing daily charts annotated by release, push and anomaly markers on the days that caused them, unique cloners against unique visitors, and a CONFLICT flag where the clone-intent score reads developer while the audience classification reads crawler."/>
 
-*`catnip tui` over one real account's public repositories — traffic
-charts, the `t` timeframe widening to the full history store, live repo
-filtering, MAD anomaly detection, and the content funnel. Everything here
-is on disk after one `catnip run`.*
+*`catnip tui` over one real account's 98 public repositories — the
+audience view separating people from fetcher fleets, `[?]` explaining
+exactly how that score was computed, a movement attributed to its cause
+and the statistics behind that call, momentum, the anomaly heatmap with
+one account event opened in full, the content funnel, and `[space]`
+opening a repo's drilldown. Everything here is on disk after one `catnip
+run`.*
 
 ## Why it exists
 
@@ -82,6 +85,7 @@ repositories is a worse outcome than a failed command.
 | `catnip totals` | Rebuild account-wide totals |
 | `catnip verify` | Assert every artifact the TUI reads exists |
 | `catnip tui` / `view` | Interactive UI / one view as text |
+| `catnip report` | Deterministic markdown analysis of the store (`--stdout`, `--force`) |
 | `catnip summary` | The newest run's `summary.md` |
 | `catnip prune` | Retention, dry-run by default |
 | `catnip timer` | `install` · `status` · `logs` · `uninstall` · `print` · `cron` |
@@ -104,31 +108,103 @@ Everything lands under `CATNIP_DATA_DIR` (default
 ```
 runs/20260805T031722Z/
   raw/          one JSON body per endpoint per repo, as returned
-  analysis/     16 CSVs + summary.md — the schema everything else reads
+  analysis/     22 CSVs + summary.md — the schema everything else reads
   reports/      which repos were skipped, and which denied traffic
   manifest.json owner, counts, rate-limit spend, duration
 stats/
   totals.json           account-wide rollup, rebuilt from scratch each run
   history/
-    traffic_daily.json  the permanent series — never pruned
+    traffic_daily.json  the permanent series — never pruned. Daily clones
+                        and views per repo (count and uniques), plus dated
+                        referrer observations and a release/push event log
     snapshots.jsonl     append-only per-run, per-repo snapshots
 ```
 
 ## The TUI
 
-`catnip tui` opens twelve views over the newest run. Jump with `1`–`=`,
-cycle with `v`/`V`, window with `t` (1d / 1w / 2w / all — `all` reads the
-history store and grows past GitHub's horizon), filter with `/`, sort
+`catnip tui` opens ten views. Jump with `1`–`0`, cycle with `v`/`V`,
+window with `t`/`T` (1d / 1w / 2w / all / epoch), filter with `/`, sort
 with `s`, and quit with `q`.
 
-The traffic, top-repos, table, language, code-frequency, deltas, anomaly
-(MAD-based outlier detection), cloner-profile, correlation, funnel, and
-history views all read the same CSVs, so anything the TUI shows is also
-available headlessly: `catnip view anomaly` prints it as text.
+| Key | View | Answers |
+|---|---|---|
+| `1` | traffic | daily clones and views, account-wide; at `epoch`, the whole store plus stars/month |
+| `2` | audience | is this repo's traffic people or fetchers? |
+| `3` | table | every repo, sortable by momentum, audience, depth, stars-per-visitor |
+| `4` | lang | bytes by language |
+| `5` | attribution | what moved, and the release or push that plausibly caused it |
+| `6` | deltas | what changed this window versus last, and the per-day rate |
+| `7` | anomaly | repo × day heatmap, with simultaneous spikes folded into one account event |
+| `8` | profile | clone intent — how many of the people who looked, cloned |
+| `9` | correlation | repos coupled after the account-wide release wave is removed |
+| `0` | funnel | content mix per repo, and how far past the front door traffic got |
+
+Two keys carry most of the design:
+
+- **`[space]`** opens the detail for whatever is under the cursor, and
+  closes it again. What that means depends on the view, because the
+  interesting thing differs:
+
+  | view | `[space]` opens |
+  |---|---|
+  | most repo rows | the repo **drilldown** — dual daily chart with anomaly markers and release rules under the days that caused them, uniques track, funnel mix, coupled repos, activity |
+  | `5` attribution | the **finding** — the statistics the tier rests on, the borrowed cause if any, and what else was true that day |
+  | `6` deltas | **momentum** — level, day-over-day derivative around a zero line, fitted slope, rate vs the previous window |
+  | `7` anomaly (`tab`) | the **account event** — every repo that moved that day, its Z, value, median and cause |
+  | `9` correlation | the **pair** — both daily series, both residual series, and what residualizing changed |
+  | `0` funnel | that repo's **actual pages**, with views, uniques and paths |
+
+  `j`/`k` walks to the next item without leaving; `esc` backs out.
+  `[enter]` always opens the plain repo drilldown.
+
+- **`[?]`** opens the **derivation overlay**: the formula, thresholds and
+  inputs behind whatever is on screen, including whether the numbers are
+  raw counts or uniques and which components were withheld for want of
+  evidence. A score you cannot explain from inside the TUI is a defect.
+
+Other keys: `s` picks a sort column and `S` flips its direction; `o`
+cycles the repo scope (owned / all / forks); `f` filters; `z` on deltas
+un-collapses unchanged rows; `l` shows repos with too little traffic to
+classify.
+
+Every windowed number is computed from the durable daily store, never
+from GitHub's rolling 14-day totals — those lose their oldest day nightly,
+so differencing them reports window artifacts as change. The one
+exception is the funnel, whose path data GitHub exposes only as a rolling
+snapshot; that view says so, and `[?]` explains why.
+
+Everything is available headlessly: `catnip view deltas`,
+`catnip view audience`, and so on read the same functions the screens do,
+and `catnip view why --timeframe audience` prints a derivation.
+
+The viewer also runs with **no run directory at all** — after `catnip
+prune` has swept every run, the store still answers. Point it anywhere
+with `--history-file` / `--stats-file`, or force it with `--store-only`.
 
 The drawing layer is [pane](https://github.com/TGPSKI/pane), vendored
 byte-identically into `src/catnip/tui/`. It knows what a terminal is;
-everything that knows what a repository is lives in `src/catnip/ui.py`.
+`src/catnip/derive.py` knows what a number means; `src/catnip/ui.py`
+knows what a repository is.
+
+## Analysis
+
+`catnip report` writes a markdown analysis of the durable store to
+`<data>/reports/<UTC stamp>/report.md`: headline totals and change,
+biggest movers with their trend, what moved and what caused it, account
+events, audience classification, clone intent, coupled repos, content
+depth — and an explicit section on what it **cannot** tell you.
+
+It is deterministic. The same store and timeframe produce byte-identical
+markdown, and every figure is tagged `measured`. It refuses to write
+again until the store's newest day advances, because catnip collects
+daily and two reports over identical data are one finding printed twice;
+`--force` overrides.
+
+The [`catnip-prowl`](.agents/skills/catnip-prowl/SKILL.md) agent skill
+builds on it — running the deterministic report first, then forming and
+testing its own hypotheses to find what strict arithmetic gates out. Its
+findings are tagged `inferred` or `speculative` and written to a separate
+file, so you can always tell an agent's idea from the arithmetic.
 
 ## Automation
 
@@ -147,7 +223,7 @@ macOS/launchd and for what to do when the timer silently stops firing.
 
 ## For agents
 
-`.agents/skills/` ships two skills, usable by any agent that reads
+`.agents/skills/` ships three skills, usable by any agent that reads
 `SKILL.md` files:
 
 - **`catnip-onboarding`** — a directed workflow that takes a new user
@@ -157,6 +233,9 @@ macOS/launchd and for what to do when the timer silently stops firing.
   resolve coordinates first (which config, which account, which run),
   build a timeline, generate competing hypotheses, and identify the one
   piece of evidence that discriminates between them.
+- **`catnip-prowl`** — the analysis pass described above: read the
+  deterministic report, then hunt for what it did not think to ask,
+  tagging every claim `measured`, `inferred` or `speculative`.
 
 `catnip doctor --json` exists so an agent can read the whole environment
 in one call. [AGENTS.md](AGENTS.md) is the router for working on catnip

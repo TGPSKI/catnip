@@ -35,7 +35,18 @@ def classify_path(path):
 
     p = path.lower()
 
-    # overview - repo root or main landing pages
+    # overview - the repo landing page.
+    #
+    # GitHub's popular-paths endpoint reports these as "/owner/repo" and
+    # "/owner/repo/tree/<branch>", never as "/". Matching only the bare
+    # forms meant no path on any repo was EVER classified overview, so the
+    # front door landed in "other" and depth_ratio — deep views over
+    # overview views — had no denominator on the whole account.
+    parts = [seg for seg in p.split("/") if seg]
+    if len(parts) <= 2:
+        return "overview"
+    if len(parts) == 4 and parts[2] in ("tree", "blob"):
+        return "overview"
     if p in ("/", "/tree/main", "/tree/master", "/blob/main", "/blob/master"):
         return "overview"
 

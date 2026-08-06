@@ -105,7 +105,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         stats = json.loads((self.root / "stats" / "totals.json").read_text())
         self.assertEqual(stats["owner"], "testuser")
-        self.assertEqual(stats["total_repos"], 2)
+        self.assertEqual(stats["total_repos"], 3)
         # 14 days x (2 + 3 clones/day baseline with the +i%3 wobble) — the
         # exact figure matters less than it being stable across a rebuild.
         rebuilt_once = stats["total_clones"]
@@ -144,3 +144,76 @@ class PipelineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoreUpgradeTests(unittest.TestCase):
+    """A schema bump must backfill, not just relabel.
+
+    `ingest` skips runs already in `fetches_ingested`, so a store built
+    before the referrers/events sections existed declared schema 2 and
+    then never filled them — the drilldown's cause rules and the audience
+    view's referrer diversity stayed empty forever, with nothing on
+    screen to say why.
+    """
+
+    def test_new_sections_backfill_from_already_ingested_runs(self):
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+
+        from fixtures import make_run
+
+        from catnip import history
+        from catnip.analyze import analyze_github
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = make_run(root)
+            hist = root / "stats" / "history"
+            with redirect_stdout(io.StringIO()):
+                analyze_github(run, strict=True)
+                history.ingest(root / "runs", hist, "testuser")
+
+            # Simulate a store that predates the sections: drop them and
+            # leave the run marked ingested, exactly as an upgrade looks.
+            store_path = hist / "traffic_daily.json"
+            store = json.loads(store_path.read_text())
+            self.assertIn("events", store)
+            del store["events"], store["referrers"]
+            store_path.write_text(json.dumps(store))
+
+            with redirect_stdout(io.StringIO()):
+                history.ingest(root / "runs", hist, "testuser")
+
+            after = json.loads(store_path.read_text())
+            self.assertTrue(after.get("events"), "events were never backfilled")
+            self.assertTrue(after.get("referrers"), "referrers were never backfilled")
+            # And the traffic it already had is untouched.
+            self.assertEqual(sorted(after["repos"]), sorted(store["repos"]))
+
+    def test_backfill_is_idempotent(self):
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+
+        from fixtures import make_run
+
+        from catnip import history
+        from catnip.analyze import analyze_github
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = make_run(root)
+            hist = root / "stats" / "history"
+            with redirect_stdout(io.StringIO()):
+                analyze_github(run, strict=True)
+                history.ingest(root / "runs", hist, "testuser")
+                first = json.loads((hist / "traffic_daily.json").read_text())
+                history.ingest(root / "runs", hist, "testuser")
+                second = json.loads((hist / "traffic_daily.json").read_text())
+        self.assertEqual(first["events"], second["events"])
+        self.assertEqual(first["referrers"], second["referrers"])

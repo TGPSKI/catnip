@@ -216,6 +216,14 @@ class Config:
         return self.history_dir / "traffic_daily.json"
 
     @property
+    def reports_dir(self) -> Path:
+        """Where `catnip report` writes. Under the data directory, not the
+        checkout: reports describe private repositories' traffic, and the
+        rule that config.py owns every path exists so the timer and your
+        shell cannot disagree about which one is real."""
+        return self.data_dir / "reports"
+
+    @property
     def log_dir(self) -> Path:
         return self.data_dir / "logs"
 
@@ -241,6 +249,7 @@ class Config:
             "stats_file": str(self.stats_file),
             "history_dir": str(self.history_dir),
             "history_file": str(self.history_file),
+            "reports_dir": str(self.reports_dir),
             "log_dir": str(self.log_dir),
             "config_file": str(self.source) if self.source else "",
         }

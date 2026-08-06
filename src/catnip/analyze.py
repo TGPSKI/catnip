@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -77,6 +77,7 @@ def analyze_github(raw, strict=False):
     org_repos = load_json(raw / "raw/org_repos.json") or []
     repos_data, lang_dist_rows, code_freq_rows, pr_rows, repo_rel_out, issue_rows, contrib_out = [], [], [], [], [], [], []
     asset_rows, referrer_rows, star_rows, fork_rows = [], [], [], []
+    commit_daily_rows = []
     lang_bytes_g = Counter()
     pt_g = pm_g = rt_g = ct_g = 0
     norm = {}
@@ -92,6 +93,12 @@ def analyze_github(raw, strict=False):
         # lose all 72 of its stars). Detail metadata still wins when present.
         m = load_json(raw / f"raw/repo_{rs}.json") or ro
         archived = bool(m.get("archived"))
+        # Carried through to the CSV so the viewer can separate what you
+        # wrote from what you forked. A fork's commit history and language
+        # bytes are upstream's, and mixing them into "your languages" or
+        # "most commits" answers a question nobody asked.
+        is_fork = bool(m.get("fork"))
+        is_private = bool(m.get("private"))
         readme_f = (raw / f"raw/repo_{rs}_readme.md").is_file()
         li = m.get("license")
         lic = li.get("spdx_id", "") if isinstance(li, dict) else ""
@@ -129,6 +136,23 @@ def analyze_github(raw, strict=False):
                 ep = safe_int(week.get("week"), 0)
                 if ep:
                     weekly.setdefault(ep, {"commits": 0, "additions": 0, "deletions": 0})["commits"] += wc
+                # commit_activity's `days` is seven daily counts starting on
+                # the Sunday named by `week`. Collapsing it to the weekly
+                # total throws away the only DAILY authorship signal catnip
+                # collects — the one thing that can put a cause under a
+                # traffic spike ("that Thursday's clones follow that
+                # Thursday's push") instead of near it.
+                days = week.get("days")
+                if ep and isinstance(days, list):
+                    for i, dc in enumerate(days[:7]):
+                        n = safe_int(dc, 0)
+                        if n <= 0: continue
+                        try:
+                            d = (datetime.fromtimestamp(int(ep), tz=timezone.utc)
+                                 + timedelta(days=i)).strftime("%Y-%m-%d")
+                        except (ValueError, TypeError, OSError):
+                            continue
+                        commit_daily_rows.append({"repo_name": rn, "date": d, "commits": n})
         avg_w = round(tc / max(1, tw), 1)
         ct_g += tc
 
@@ -276,6 +300,8 @@ def analyze_github(raw, strict=False):
             "updated_at": m.get("updated_at", ""),
             "pushed_at": m.get("pushed_at", ""),
             "archived": archived,
+            "is_fork": is_fork,
+            "is_private": is_private,
             "has_wiki": bool(m.get("has_wiki")),
             "has_discussions": bool(m.get("has_discussions")),
             "has_pages": bool(m.get("has_pages")),
@@ -374,7 +400,8 @@ def analyze_github(raw, strict=False):
             "default_branch": r["default_branch"],
             "created_at": r["created_at"], "updated_at": r["updated_at"],
             "pushed_at": r["pushed_at"],
-            "archived": str(r["archived"]), "has_wiki": str(r["has_wiki"]),
+            "archived": str(r["archived"]), "is_fork": str(r["is_fork"]),
+            "is_private": str(r["is_private"]), "has_wiki": str(r["has_wiki"]),
             "has_discussions": str(r["has_discussions"]),
             "has_pages": str(r["has_pages"]),
             "has_downloads": str(r["has_downloads"]),
@@ -409,6 +436,8 @@ def analyze_github(raw, strict=False):
     write_csv(ad / "github_contributions.csv", ["repo_name","contributor_login","contributions","weeks","avg_weekly"], contrib_out)
     code_freq_rows.sort(key=lambda x: (x["repo_name"], x["week_epoch"]))
     write_csv(ad / "github_code_frequency.csv", ["repo_name","week_epoch","week_label","additions","deletions","total","commits"], code_freq_rows)
+    commit_daily_rows.sort(key=lambda x: (x["repo_name"], x["date"]))
+    write_csv(ad / "github_commit_daily.csv", ["repo_name","date","commits"], commit_daily_rows)
     pr_rows.sort(key=lambda x: (x["repo_name"], x["pr_number"]))
     write_csv(ad / "github_pull_requests.csv", ["repo_name","pr_number","title","state","merged","merged_at","created_at","closed_at"], pr_rows)
     write_csv(ad / "github_releases.csv", ["repo_name","tag_name","name","published_at","draft","prerelease","total_releases"], repo_rel_out)
@@ -427,7 +456,7 @@ def analyze_github(raw, strict=False):
     write_csv(ad / "github_top_repos.csv", ["rank","sort_criteria","repo_name","value","stars","forks"], tro)
     st2 = []
     for r in repos_data:
-        st2.append({"repo_name": r["name"], "stars": r["stars"], "forks": r["forks"], "watchers": r["watchers"], "total_downloads": r["total_downloads"], "open_issues": r["open_issues"], "repo_age_days": r["repo_age_days"], "days_since_push": r["days_since_push"], "total_commits": r["total_commits"], "total_contributors": r["total_contributors"], "traffic_score": r["traffic_score"], "activity_score": r["activity_score"], "total_clones": r["total_clones"], "total_unique_cloners": r["total_unique_cloners"], "total_views": r["total_views"], "total_unique_views": r["total_unique_views"], "total_paths": r["total_paths"], "primary_language": r["language"] or "-", "languages_count": r["languages_count"], "archived": str(r["archived"]), "status": r["status"]})
+        st2.append({"repo_name": r["name"], "stars": r["stars"], "forks": r["forks"], "watchers": r["watchers"], "total_downloads": r["total_downloads"], "open_issues": r["open_issues"], "repo_age_days": r["repo_age_days"], "days_since_push": r["days_since_push"], "total_commits": r["total_commits"], "total_contributors": r["total_contributors"], "traffic_score": r["traffic_score"], "activity_score": r["activity_score"], "total_clones": r["total_clones"], "total_unique_cloners": r["total_unique_cloners"], "total_views": r["total_views"], "total_unique_views": r["total_unique_views"], "total_paths": r["total_paths"], "primary_language": r["language"] or "-", "languages_count": r["languages_count"], "archived": str(r["archived"]), "is_fork": str(r["is_fork"]), "status": r["status"]})
     st2.sort(key=lambda x: -float(x.get("traffic_score", 0)))
     write_csv(ad / "github_stats_by_repo.csv", list(st2[0].keys()) if st2 else [], st2)
     vel = []
@@ -501,7 +530,7 @@ def analyze_github(raw, strict=False):
 
 
     L = []
-    L.append("# sh-github Analytics - Summary")
+    L.append("# catnip — run summary")
     L.append("")
     L.append(f"Generated: {now.strftime('%Y-%m-%d %H:%M UTC')}")
     L.append("")

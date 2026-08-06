@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 
+@unittest.skipIf(os.environ.get("CATNIP_SKIP_PTY"),
+                 "CATNIP_SKIP_PTY set (make quick)")
 @unittest.skipUnless(os.name == "posix", "pty harness is POSIX-only")
 class TuiSmokeTests(unittest.TestCase):
     @classmethod
@@ -55,14 +57,32 @@ class TuiSmokeTests(unittest.TestCase):
         os.environ["PYTHONPATH"] = SRC + os.pathsep + os.environ.get("PYTHONPATH", "")
 
     def test_every_view_renders(self):
-        # '1'..'=' jump straight to each view; then quit.
-        self.smoke("1234567890-=q")
+        # '1'..'0' jump straight to each view; then quit.
+        self.smoke("1234567890q")
 
     def test_timeframes_and_sorts_cycle(self):
-        self.smoke("tttTTTssffq")
+        # Five timeframes now, 'epoch' included, and every view respects
+        # them — so cycling has to be safe from whatever view is up.
+        self.smoke("tttttTTTTTssffq")
 
     def test_scrolling_and_search(self):
         self.smoke("3jjkkGg/alpha\rq")
+
+    def test_drilldown_opens_and_closes_from_every_row_view(self):
+        # [enter] on a repo row, walk to the neighbouring repo, come back.
+        # One pty pass over all of them: what only a terminal can prove is
+        # that curses does not raise, and that is not per-view. The
+        # view x timeframe cross-product is covered offline, at ~400x the
+        # speed, by test_tui_layout.
+        self.smoke("2\rjk\x1b3\rjk\x1b6\rjk\x1b7\rjk\x1b8\rjk\x1b0\rjk\x1bq")
+
+    def test_drilldown_quits_without_going_back_first(self):
+        # Q from three layers deep must leave, or the only exit is guessing
+        # how many escapes are owed.
+        self.smoke("3\r?Q")
+
+    def test_derivation_overlay_opens_on_every_view(self):
+        self.smoke("1?q2?q3?q6?q7?q8?q9?q0?qq")
 
     def test_minimum_terminal_size_refuses_instead_of_garbling(self):
         # 60x16 is the documented floor; below it the framework must say so

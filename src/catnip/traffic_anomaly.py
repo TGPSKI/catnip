@@ -7,6 +7,11 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+#: Kept equal to derive.Z_MIN_VALUE — the CSV and the TUI must agree about
+#: what counts as an event, or `catnip view anomaly` and the anomaly screen
+#: disagree about the same day.
+MIN_DEVIATION = 3
+
 
 def safe_int(val, default=0):
     if val is None:
@@ -34,11 +39,30 @@ def mad(values):
     return median(deviations)
 
 
-def modified_z_score(value, med, mad_val):
-    """Modified z-score: 0.6745 * (x - median) / MAD."""
-    if mad_val == 0:
+def mean_ad(values):
+    """Mean Absolute Deviation about the median."""
+    if not values:
         return 0.0
-    return 0.6745 * (value - med) / mad_val
+    med = median(values)
+    return sum(abs(v - med) for v in values) / len(values)
+
+
+def modified_z_score(value, med, mad_val, mean_ad_val=0.0):
+    """Modified z-score: 0.6745 * (x - median) / MAD, with a meanAD fallback.
+
+    Returning 0.0 whenever MAD is zero — as this did — makes the detector
+    blind to exactly the events worth detecting. A repo that sits at zero
+    clones for twelve days and then takes 421 in an afternoon has a median
+    of 0 and a MAD of 0, so its spike scored 0.00 and never reached the
+    view; on live data that silenced the single largest event in the
+    account. (x - median) / (1.253314 * meanAD) is the standard remedy for
+    a degenerate MAD and scores that same day 8.7.
+    """
+    if mad_val:
+        return 0.6745 * (value - med) / mad_val
+    if mean_ad_val:
+        return (value - med) / (1.253314 * mean_ad_val)
+    return 0.0
 
 
 def anomaly_type(severity):
@@ -157,6 +181,7 @@ def _process_series(repo_name, series, metric, values, results):
 
     med = median(values)
     mad_val = mad(values)
+    mean_ad_val = mean_ad(values)
 
     # Must have at least 3 non-zero values to be meaningful
     non_zero = sum(1 for v in values if v > 0)
@@ -168,9 +193,14 @@ def _process_series(repo_name, series, metric, values, results):
 
     for i, entry in enumerate(series):
         val = entry["count"]
-        z = modified_z_score(val, med, mad_val)
+        z = modified_z_score(val, med, mad_val, mean_ad_val)
         atype = anomaly_type(z)
         if atype is None:
+            continue
+        # Materiality floor. With the meanAD fallback in play a repo whose
+        # baseline is zero scores a single clone as extreme, which is true
+        # and useless: it fills the table with ones. See derive.Z_MIN_VALUE.
+        if abs(val - med) < MIN_DEVIATION:
             continue
 
         dev_pct = 0.0

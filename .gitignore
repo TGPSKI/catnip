@@ -13,6 +13,12 @@ venv/
 .coverage
 htmlcov/
 
+# --- analysis reports ---
+# `catnip report` writes to CATNIP_DATA_DIR/reports by default, outside
+# the checkout. This covers a local --out-dir pointed here: a report
+# names private repositories and their traffic.
+reports/
+
 # --- catnip's own data and configuration ---
 # Collected runs live in CATNIP_DATA_DIR (~/.local/share/catnip by
 # default), never in the checkout — but a local override or an old

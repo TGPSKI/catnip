@@ -21,6 +21,7 @@ Consequences you must preserve:
 | `totals.py` is a pure rebuild, never an accumulator | Every run re-snapshots the same 14 days; summing them inflates clones severalfold |
 | Traffic merges are element-wise **max**, never sum | GitHub revises recent days upward as its pipeline settles |
 | The timer is `Persistent=true` | A machine asleep at the scheduled time must run on wake |
+| Derived views read `stats/history/`, never the rolling totals | The rolling window loses its left edge nightly; differencing two snapshots of it reports "what aged out" as "what changed" |
 
 If a change makes any of those five statements false, it is wrong even if
 the tests pass.
@@ -39,9 +40,17 @@ src/catnip/
   traffic_funnel.py   path taxonomy               | run by analyze.py in order
   traffic_correlation.py  cross-repo Pearson      | (cluster consumes profile
   traffic_cluster.py  cosine clustering          /   and funnel output)
+  derive.py           EVERY windowed number the TUI shows, computed from
+                      the durable daily store alone. Pure, offline-testable,
+                      and the home of DERIVATIONS — the [?] overlay text
+                      lives beside the formula it describes
   history.py          analysis CSVs -> stats/history/  (never pruned)
   totals.py           runs + history -> stats/totals.json
-  ui.py               the curses app: every view, every keybinding
+  ui.py               the curses app: every view, every keybinding. Draws;
+                      does not decide what a number means (that is derive.py)
+  report.py           `catnip report` — deterministic markdown from derive.py
+                      alone. Same store + timeframe = byte-identical output;
+                      the floor the catnip-prowl skill stands on
   doctor.py           preflight + health checks; `--json` is an agent surface
   prune.py            retention with the data-loss guard
   timer.py            renders and installs the systemd user units
@@ -82,12 +91,20 @@ tests/                stdlib unittest; fixtures.py builds synthetic runs
 ## Development workflow
 
 ```bash
-make check         # compile + 51 tests + shell syntax — what CI gates on
+make quick         # everything except the pty smoke (~4s) — iterate on this
+make check         # compile + full suite + shell syntax — what CI gates on
 make lint          # ruff; the analyze.py exemption is deliberate, see ruff.toml
 make smoke         # drive the real TUI in a pty at three terminal sizes
 make vendor-check  # byte-identity of src/catnip/tui against PANE=../pane
 make doctor        # run catnip's own health checks against your account
 ```
+
+The pty smoke is ~90% of `make check`'s wall clock: it spawns real
+terminals and sleeps 0.35s per keypress so curses can settle. What only a
+terminal can prove is that curses does not raise; everything about
+*layout* is asserted offline against a character grid, which is why
+`test_tui_layout` sweeps every view at every timeframe and the pty suite
+deliberately does not. Iterate on `make quick`, gate on `make check`.
 
 Every test is offline: `tests/fixtures.py` writes the same file layout
 `fetch.sh` produces, so CI needs no token and cannot be rate-limited. If
@@ -100,7 +117,13 @@ commit or the pipeline tests are testing a shape that no longer exists.
   identical — a test asserts it. The doubled `-` is load-bearing:
   without it `a-b` and `a_b` collide and one repo's raw JSON overwrites
   the other's.
-- **The 16 TUI CSVs** are listed in `doctor.TUI_CSVS`. A deep-traffic
+- **Provenance is a contract, not a style.** The attribution view tiers
+  each row (`direct` observed, `coupled` inferred, `speculative` never
+  silently promoted); the audience composite drops components it cannot
+  compute instead of scoring them zero; the report has a section for what
+  it cannot tell you. A number whose confidence is not stated is worse
+  than a missing number, because it will be acted on.
+- **The 17 TUI CSVs** are listed in `doctor.TUI_CSVS`. A deep-traffic
   stage that fails inside `analyze.py` is only a warning, so that list
   is what turns "one silently empty panel three days later" into a
   failed `catnip verify` now. Adding a view means adding its CSV there.
