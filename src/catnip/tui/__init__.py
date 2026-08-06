@@ -1,6 +1,6 @@
 """Vendored curses-TUI primitives (stdlib only).
 
-Source: https://github.com/TGPSKI/pane @ 03c84e4+dirty
+Source: https://github.com/TGPSKI/pane @ c098bd2+dirty
 (src/pane: framework.py, charts.py, fmt.py, windows.py, interact.py,
 grids.py),
 copied verbatim so this repository runs from a fresh clone with no

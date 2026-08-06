@@ -48,6 +48,9 @@ src/catnip/
   totals.py           runs + history -> stats/totals.json
   ui.py               the curses app: every view, every keybinding. Draws;
                       does not decide what a number means (that is derive.py)
+  report.py           `catnip report` — deterministic markdown from derive.py
+                      alone. Same store + timeframe = byte-identical output;
+                      the floor the catnip-prowl skill stands on
   doctor.py           preflight + health checks; `--json` is an agent surface
   prune.py            retention with the data-loss guard
   timer.py            renders and installs the systemd user units
@@ -114,6 +117,12 @@ commit or the pipeline tests are testing a shape that no longer exists.
   identical — a test asserts it. The doubled `-` is load-bearing:
   without it `a-b` and `a_b` collide and one repo's raw JSON overwrites
   the other's.
+- **Provenance is a contract, not a style.** The attribution view tiers
+  each row (`direct` observed, `coupled` inferred, `speculative` never
+  silently promoted); the audience composite drops components it cannot
+  compute instead of scoring them zero; the report has a section for what
+  it cannot tell you. A number whose confidence is not stated is worse
+  than a missing number, because it will be acted on.
 - **The 17 TUI CSVs** are listed in `doctor.TUI_CSVS`. A deep-traffic
   stage that fails inside `analyze.py` is only a warning, so that list
   is what turns "one silently empty panel three days later" into a

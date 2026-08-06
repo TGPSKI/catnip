@@ -140,18 +140,31 @@ with `s`, and quit with `q`.
 
 Two keys carry most of the design:
 
-- **`[space]`** on any repo row opens a full-screen **drilldown** for that
-  repo — dual daily chart with anomaly markers and release rules drawn
-  under the days that caused them, the uniques track, its funnel mix, its
-  coupled repos, and its PR/release/push activity. `j`/`k` steps to the
-  next repo in the list you came from; `space` or `esc` returns. On the
-  anomaly screen, `[tab]` moves to the account-event list and `[space]`
-  opens the event instead: every repo that moved that day, its |Z|,
-  value and median, and whatever release or push it followed.
+- **`[space]`** opens the detail for whatever is under the cursor, and
+  closes it again. What that means depends on the view, because the
+  interesting thing differs:
+
+  | view | `[space]` opens |
+  |---|---|
+  | most repo rows | the repo **drilldown** — dual daily chart with anomaly markers and release rules under the days that caused them, uniques track, funnel mix, coupled repos, activity |
+  | `5` attribution | the **finding** — the statistics the tier rests on, the borrowed cause if any, and what else was true that day |
+  | `6` deltas | **momentum** — level, day-over-day derivative around a zero line, fitted slope, rate vs the previous window |
+  | `7` anomaly (`tab`) | the **account event** — every repo that moved that day, its Z, value, median and cause |
+  | `9` correlation | the **pair** — both daily series, both residual series, and what residualizing changed |
+  | `0` funnel | that repo's **actual pages**, with views, uniques and paths |
+
+  `j`/`k` walks to the next item without leaving; `esc` backs out.
+  `[enter]` always opens the plain repo drilldown.
+
 - **`[?]`** opens the **derivation overlay**: the formula, thresholds and
   inputs behind whatever is on screen, including whether the numbers are
   raw counts or uniques and which components were withheld for want of
   evidence. A score you cannot explain from inside the TUI is a defect.
+
+Other keys: `s` picks a sort column and `S` flips its direction; `o`
+cycles the repo scope (owned / all / forks); `f` filters; `z` on deltas
+un-collapses unchanged rows; `l` shows repos with too little traffic to
+classify.
 
 Every windowed number is computed from the durable daily store, never
 from GitHub's rolling 14-day totals — those lose their oldest day nightly,

@@ -64,6 +64,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shipped; the partner and its r are named), `account` (a wave, no single
   cause), `dip` (deliberately unattributed), `unexplained`, `no-effect`
   (you shipped and nothing followed — silence is a result).
+- **`[space]` on an attribution row opens the finding.** Not the repo —
+  a row is a claim about one day, so the thing to inspect is the claim.
+  Shows the effect series with the day marked, the statistics the tier
+  rests on (median, MAD, meanAD, z, and the materiality floor it cleared
+  or did not), the borrowed cause for `coupled` rows with both series
+  and the raw-vs-residual gap, and for `no-effect` rows what this repo's
+  earlier releases actually drew. Then context: who else moved that day,
+  this repo's other findings in the window, its audience and intent, its
+  busiest page. A tier is a judgement from thin evidence and the operator
+  should be able to overturn it here rather than take it on trust.
 - **`[space]` on a deltas row opens a momentum view.** Level, the
   day-over-day first derivative drawn around a zero line, a least-squares
   slope, and this window's rate against the previous one. A deltas cell
@@ -256,6 +266,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`catnip report` was advertised in the help and never dispatched** —
+  it printed "unknown command" and then listed itself among the available
+  commands. Found by running `catnip-prowl`, whose first phase is to run
+  the report. A test now parses the usage block and asserts every
+  advertised command has a matching case arm.
+- **A chart could promise a marker it did not draw.** A bar carrying both
+  `peak` and `value_labels` had the label written over the marker, so a
+  title reading "▲ marks this day" showed none. Fixed upstream in pane:
+  the marker is load-bearing and the value is already legible from the
+  axis.
 - **No path was ever classified `overview`, on any repo.** GitHub's
   popular-paths endpoint reports a repo's landing page as `/owner/repo`;
   `classify_path` matched only `/` and the bare `/tree/main` forms, so

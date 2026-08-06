@@ -250,19 +250,30 @@ def bar_chart(put, curses_mod, top, series, plot_h, max_x, *,
         else:
             if _touches_top(i):
                 top_free = max(top_free, x + bar_w)
-            if peak_attr is not None and b.get("peak") and h_eff < plot_h:
+            marked = peak_attr is not None and b.get("peak") and h_eff < plot_h
+            if marked:
                 put(y + plot_h - 1 - h_eff, x, "▲" * min(bar_w, 1), peak_attr)
 
             # value above bar — only when there's a clear row above it, so the
             # tallest bar's label never lands on the title/axis-max line.
+            #
+            # A marked bar keeps its ▲ and gives up its label unless the
+            # value also fits beside it. Written the other way round, the
+            # label landed on the same cell and silently erased the marker,
+            # so a chart could announce "▲ marks this day" and show none.
             if value_labels and count > 0 and h_eff < plot_h:
                 vs = fmt(count)
-                # label_fit: write the full value only when it fits before the
-                # next bar; a truncated "1.3k"->"1" is worse than no label.
-                if not label_fit:
-                    put(y + plot_h - 1 - h_eff, x, vs[:slot], A_DIM)
-                elif len(vs) <= slot - 1:
-                    put(y + plot_h - 1 - h_eff, x, vs, A_DIM)
+                row, col = y + plot_h - 1 - h_eff, x
+                if marked:
+                    col += 1
+                    if len(vs) + 1 > slot - 1:
+                        vs = ""
+                if not vs:
+                    pass
+                elif not label_fit:
+                    put(row, col, vs[: max(0, slot - (1 if marked else 0))], A_DIM)
+                elif len(vs) <= slot - 1 - (1 if marked else 0):
+                    put(row, col, vs, A_DIM)
 
         if not label_fit and (label_every <= 1 or i % label_every == 0
                               or i == n - 1):

@@ -633,3 +633,103 @@ class MomentumViewTests(unittest.TestCase):
         arrow = app.sort_arrow(app._sort_desc(True))
         app.handle_key(ord("S"))
         self.assertNotEqual(app.sort_arrow(app._sort_desc(True)), arrow)
+
+
+class FindingDetailTests(unittest.TestCase):
+    """[space] on an attribution row opens the finding, not the repo.
+
+    A row is a claim about one day. The thing to inspect is the claim —
+    including the statistics the tier rests on, so the operator can
+    overturn it rather than take it on trust.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+            history.ingest(root / "runs", root / "stats" / "history", "testuser")
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def app(self):
+        return build_tui(self.data, 40, 150, "attribution")
+
+    def test_space_opens_the_finding_and_enter_opens_the_repo(self):
+        app = self.app()
+        app.handle_key(ord(" "))
+        self.assertIsNotNone(app.drilldown_finding)
+        self.assertIsNone(app.drilldown)
+        app.handle_key(ord(" "))
+        app.handle_key(FakeCurses.KEY_ENTER)
+        self.assertIsNotNone(app.drilldown)
+        self.assertIsNone(app.drilldown_finding)
+
+    def test_escape_closes_it(self):
+        app = self.app()
+        app.handle_key(ord(" "))
+        app.handle_key(27)
+        self.assertIsNone(app.drilldown_finding)
+
+    def test_j_k_walk_to_the_next_finding(self):
+        app = self.app()
+        rows = app._attribution_rows()
+        if len(rows) < 2:
+            self.skipTest("fixture has one finding")
+        app.handle_key(ord(" "))
+        first = app.drilldown_finding
+        app.handle_key(ord("j"))
+        self.assertNotEqual(app.drilldown_finding, first)
+
+    def test_it_renders_for_every_row_and_stays_in_frame(self):
+        rows = self.app()._attribution_rows()
+        self.assertTrue(rows, "fixture produced no attribution rows")
+        for row in rows:
+            for height in (40, 24, 16):
+                app = build_tui(self.data, height, 150, "attribution")
+                app.drilldown_finding = row
+                app._render_finding_detail(height - 3, 150)
+                drawn = [y for y, _x, t in app.writes if str(t).strip()]
+                if not drawn:
+                    continue
+                self.assertLess(max(drawn), height - 1,
+                                f"{row['repo']}@{height} drew onto the footer")
+                self.assertGreaterEqual(min(drawn), 2, f"{row['repo']}@{height}")
+
+    def test_it_shows_the_statistics_the_tier_rests_on(self):
+        app = self.app()
+        row = next((r for r in app._attribution_rows()
+                    if r["tier"] not in ("no-effect",)), None)
+        if row is None:
+            self.skipTest("fixture has only no-effect rows")
+        app.drilldown_finding = row
+        app.render(40, 150)
+        text = " ".join(t for _y, _x, t in app.writes)
+        self.assertIn("why this tier", text)
+        self.assertIn("median", text)
+        self.assertIn("floor", text)
+
+    def test_a_borrowed_cause_is_marked_as_inferred(self):
+        app = self.app()
+        row = next((r for r in app._attribution_rows() if r["tier"] == "coupled"),
+                   None)
+        if row is None:
+            self.skipTest("fixture has no coupled findings")
+        app.drilldown_finding = row
+        app.render(40, 150)
+        text = " ".join(t for _y, _x, t in app.writes)
+        self.assertIn("inferred, not observed", text)
+
+    def test_context_is_present_however_thin_the_data(self):
+        app = self.app()
+        for row in app._attribution_rows():
+            a = build_tui(self.data, 40, 150, "attribution")
+            a.drilldown_finding = row
+            a.render(40, 150)
+            text = " ".join(t for _y, _x, t in a.writes)
+            self.assertIn("context", text)

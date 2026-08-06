@@ -719,6 +719,90 @@ def attribution(store, timeframe, end=None, funnel_rows=None):
             "coupling_available": bool(couples)}
 
 
+def release_response(store, repo, metric="clones"):
+    """What this repo's releases have historically been worth.
+
+    A `no-effect` row says a release moved nothing. Whether that is
+    disappointing depends entirely on what this repo's releases normally
+    do, and the store knows: every past release with the traffic that
+    followed it. Returns [] when there is no history to compare against,
+    which is itself the answer for a repo shipping for the first time.
+    """
+    section = ((store or {}).get("events") or {}).get(repo) or {}
+    releases = sorted((day, tag) for tag, day in (section.get("releases") or {}).items())
+    days = store_days(store)
+    if not releases or not days:
+        return []
+    index = {d: i for i, d in enumerate(days)}
+    out = []
+    for day, tag in releases:
+        i = index.get(day)
+        if i is None:
+            continue
+        after = series(store, repo, metric, days[i:i + ATTRIBUTION_LAG + 1])
+        before = series(store, repo, metric, days[max(0, i - 7):i])
+        out.append({
+            "day": day, "tag": tag, "after": sum(after),
+            "baseline": (sum(before) / len(before)) if before else 0.0,
+        })
+    return out
+
+
+def finding_context(store, timeframe, row, end=None):
+    """Everything known about one attribution row, for its detail view.
+
+    Deliberately assembled here rather than in the view: the numbers a
+    finding is judged on should come from the same place the finding did.
+    """
+    days = window(store, timeframe, end)
+    repo = row["repo"]
+    grid = anomalies(store, timeframe, end)
+    cells = dict(grid["rows"])
+    day = row["day"]
+    i = days.index(day) if day in days else None
+
+    metric = row.get("metric") or "clones"
+    values = series(store, repo, metric, days)
+    med = median(values)
+    devs = [abs(v - med) for v in values]
+    mad = median(devs)
+    mean_ad = (sum(devs) / len(devs)) if devs else 0.0
+
+    same_day = sorted(
+        other for other, other_cells in cells.items()
+        if other != repo and i is not None and i < len(other_cells)
+        and other_cells[i] and other_cells[i]["material"])
+
+    others = []
+    for j, cell in enumerate(cells.get(repo) or []):
+        if cell and cell["material"] and days[j] != day:
+            others.append({"day": days[j], "metric": cell["metric"],
+                           "z": cell["z"], "dir": cell["dir"],
+                           "value": cell["value"]})
+
+    partner = None
+    if row.get("via"):
+        other, r = row["via"]
+        raw = pearson(series(store, repo, metric, days),
+                      series(store, other, metric, days))
+        partner = {"repo": other, "r": r, "raw_r": raw,
+                   "values": series(store, other, metric, days)}
+
+    return {
+        "days": days, "values": values, "index": i, "metric": metric,
+        "median": med, "mad": mad, "mean_ad": mean_ad,
+        "material_floor": Z_MIN_VALUE,
+        "same_day": same_day,
+        "campaign": grid["campaigns"].get(day, []),
+        "other_findings": others,
+        "partner": partner,
+        "release_history": release_response(store, repo, metric),
+        "events": events_in(store, repo, days),
+        "audience": (audience(store, timeframe, end) or {}).get(repo),
+        "intent": (intent(store, timeframe, end) or {}).get(repo),
+    }
+
+
 # ---- E. coupled repos --------------------------------------------------------
 
 def coupled(store, timeframe, end=None, metric="clones", limit=None):

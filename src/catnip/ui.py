@@ -434,6 +434,7 @@ class AnalyticsTUI(TuiApp):
         self.deltas_hide_zero = True   # 'z' un-collapses the unchanged rows
         self.deltas_sort = 0      # index into DELTAS_SORT_KEYS
         self.drilldown_momentum = None  # repo name for the slope detail
+        self.drilldown_finding = None   # an attribution row, for its detail
         # One cursor per view, so switching away and back lands on the row
         # you were reading rather than at the top of the list.
         self.cursors = {v: RowCursor() for v in REPO_ROW_VIEWS}
@@ -609,6 +610,9 @@ class AnalyticsTUI(TuiApp):
             if self.overlay:
                 self.overlay = False
                 return False
+            if self.drilldown_finding:
+                self.drilldown_finding = None
+                return False
             if self.drilldown_momentum:
                 self.drilldown_momentum = None
                 return False
@@ -643,13 +647,24 @@ class AnalyticsTUI(TuiApp):
         # useful, but a key you press to confirm should never be the key
         # that undoes the thing you confirmed.
         if key in (curses.KEY_ENTER, 10, 13, ord(' ')):
-            if (self.drilldown_momentum or self.drilldown_pair
-                    or self.drilldown_event or self.drilldown):
+            if (self.drilldown_finding or self.drilldown_momentum
+                    or self.drilldown_pair or self.drilldown_event
+                    or self.drilldown):
                 if key == ord(' '):
+                    self.drilldown_finding = None
                     self.drilldown_momentum = None
                     self.drilldown_pair = None
                     self.drilldown_event = None
                     self.drilldown = None
+                return False
+            if self.view == 'attribution' and key == ord(' '):
+                # [space] opens the FINDING; [enter] still opens the repo.
+                # A row is a claim about one day, and the thing to inspect
+                # is the claim, not the repo it happens to name.
+                rows = self._attribution_rows()
+                if rows:
+                    cur = self.cursor('attribution').clamp(len(rows), self._page())
+                    self.drilldown_finding = rows[cur.index]
                 return False
             if self.view == 'deltas' and key == ord(' '):
                 # [space] asks "which way is this going"; [enter] still
@@ -683,6 +698,24 @@ class AnalyticsTUI(TuiApp):
             repo = self.selected_repo()
             if repo:
                 self.drilldown = repo
+            return False
+        if self.drilldown_finding:
+            if key == ord('Q'):
+                return True
+            if key in (ord('q'), ord('h'), curses.KEY_LEFT,
+                       curses.KEY_BACKSPACE, 127, 8):
+                self.drilldown_finding = None
+                return False
+            if key in (curses.KEY_DOWN, ord('j'), curses.KEY_UP, ord('k')):
+                rows = self._attribution_rows()
+                if rows:
+                    delta = 1 if key in (curses.KEY_DOWN, ord('j')) else -1
+                    cur = self.cursor('attribution').move(delta, len(rows),
+                                                          self._page())
+                    self.drilldown_finding = rows[cur.index]
+                return False
+            if key == ord('r'):
+                self.data.reload()
             return False
         if self.drilldown_momentum:
             if key == ord('Q'):
@@ -1075,7 +1108,9 @@ class AnalyticsTUI(TuiApp):
         if avail <= 0:
             return
 
-        if self.drilldown_momentum:
+        if self.drilldown_finding:
+            self._render_finding_detail(avail, max_x)
+        elif self.drilldown_momentum:
             self._render_momentum_detail(avail, max_x)
         elif self.drilldown_pair:
             self._render_pair_detail(avail, max_x)
@@ -2280,6 +2315,147 @@ class AnalyticsTUI(TuiApp):
             return 1
         return 2
 
+    def _render_finding_detail(self, avail, max_x):
+        """One attribution row, deep and broad.
+
+        The row says a tier; this says why, and what else was true at the
+        time. The tier is a judgement made from thin evidence, and the
+        operator should be able to overturn it here — which means showing
+        the statistics it rests on, not just restating it larger.
+        """
+        curses = self.curses
+        row = self.drilldown_finding
+        tf = self.timeframe
+        ctx = derive.finding_context(self.data.history, tf, row)
+        last, y = avail + 1, 2
+        pair = self.ATTRIBUTION_TIER_COLOR.get(row['tier'], 0)
+        tier_attr = curses.color_pair(pair) if pair else self.curses.A_DIM
+
+        self._put(y, 1, f' {row["repo"]} \u2014 {_short_date(row["day"])} ',
+                  curses.color_pair(5) | curses.A_BOLD)
+        self._put(y, len(row['repo']) + len(row['day']) + 8, row['tier'], tier_attr)
+        self._put(y, max_x - 36, '[space/esc] back  [j/k] next finding',
+                  self.curses.A_DIM)
+        y += 1
+
+        cause = (f'{row["cause"]} {row["detail"]}'.strip() if row['cause']
+                 else (row['detail'] or 'no cause recorded in the store'))
+        lag = f'  (+{row["lag"]}d after the cause)' if row.get('lag') else ''
+        self._put(y, 1, f'cause: {cause}{lag}'[: max_x - 3], curses.color_pair(3))
+        y += 2
+
+        # The effect, with the day marked. `peak` puts the marker on the
+        # bar itself rather than near it.
+        values, days = ctx['values'], ctx['days']
+        chart = [{'label': _short_date(d), 'count': v}
+                 for d, v in zip(days, values, strict=False)]
+        if ctx['index'] is not None and ctx['index'] < len(chart):
+            chart[ctx['index']]['peak'] = True
+        plot_h = max(3, min(6, (last - 22)))
+        if plot_h >= 3 and y + plot_h + 4 < last:
+            y = bar_chart(
+                self._put, curses, y, chart, plot_h, max_x,
+                title=f'daily {ctx["metric"]} \u2014 \u25b2 marks {row["day"]}',
+                title_attr=curses.color_pair(6) | curses.A_BOLD,
+                axis_attr=curses.color_pair(6), color=curses.color_pair(1),
+                peak_attr=curses.color_pair(4) | curses.A_BOLD,
+                max_bar_w=6, value_labels=True, label_fit=True,
+                clip_ratio=6) + 1
+
+        # Why the tier. Measured numbers, named as such.
+        if y < last:
+            self._put(y, 1, 'why this tier', curses.color_pair(6) | curses.A_BOLD)
+            y += 1
+        if y < last and row['tier'] not in ('no-effect',):
+            moved = abs(row['value'] - (row['median'] or 0))
+            self._put(y, 3, f'median {ctx["median"]:.0f}   MAD {ctx["mad"]:.1f}   '
+                      f'meanAD {ctx["mean_ad"]:.2f}   z {row["z"]:+.1f}   '
+                      f'moved {moved:.0f} vs floor {ctx["material_floor"]}'
+                      f'  \u2192 {"material" if moved >= ctx["material_floor"] else "immaterial"}',
+                      0)
+            y += 1
+        if y < last and ctx['mad'] == 0:
+            self._put(y, 3, 'MAD is 0 (a mostly-flat series), so z uses the meanAD '
+                      'fallback \u2014 see [?].', self.curses.A_DIM)
+            y += 1
+
+        if row['tier'] == 'coupled' and ctx['partner'] and y < last:
+            p = ctx['partner']
+            removed = abs(p['raw_r']) - abs(p['r'])
+            self._put(y, 3, f'borrowed from {p["repo"]}: residual r {p["r"]:+.3f}, '
+                      f'raw {p["raw_r"]:+.3f} (wave removed {removed:+.3f})',
+                      curses.color_pair(2))
+            y += 1
+            if y < last:
+                self._put(y, 3, f'{p["repo"][:20]:<20} {_sparkline(p["values"])}',
+                          curses.color_pair(2))
+                y += 1
+            if y < last:
+                self._put(y, 3, f'{row["repo"][:20]:<20} {_sparkline(values)}'
+                          f'   \u2190 inferred, not observed on this repo',
+                          self.curses.A_DIM)
+                y += 1
+        if row['tier'] == 'no-effect' and y < last:
+            hist = [h for h in ctx['release_history'] if h['day'] != row['day']]
+            if hist:
+                usual = derive.median([h['after'] for h in hist])
+                self._put(y, 3, f'this repo\'s {len(hist)} earlier release(s) drew a '
+                          f'median of {usual:.0f} {ctx["metric"]} in {derive.ATTRIBUTION_LAG + 1} '
+                          f'days \u2014 so this one is {"typical" if usual < 3 else "below par"}',
+                          self.curses.A_DIM)
+            else:
+                self._put(y, 3, 'no earlier release in the store to compare against',
+                          self.curses.A_DIM)
+            y += 1
+        y += 1
+
+        # Context: what else was true that day, and what this repo is.
+        if y < last:
+            self._put(y, 1, 'context', curses.color_pair(6) | curses.A_BOLD)
+            y += 1
+        if y < last:
+            if ctx['campaign']:
+                self._put(y, 3, f'account event: {len(ctx["campaign"])} repos moved '
+                          f'together \u2014 {", ".join(ctx["campaign"][:6])}'[: max_x - 5],
+                          curses.color_pair(3))
+            elif ctx['same_day']:
+                self._put(y, 3, f'{len(ctx["same_day"])} other repo(s) also moved: '
+                          f'{", ".join(ctx["same_day"][:6])}'[: max_x - 5],
+                          self.curses.A_DIM)
+            else:
+                self._put(y, 3, 'no other repo moved that day', self.curses.A_DIM)
+            y += 1
+        if y < last:
+            a, i = ctx['audience'] or {}, ctx['intent'] or {}
+            self._put(y, 3, f'audience {a.get("score", 0):.2f} [{a.get("label", "?")}]   '
+                      f'intent {i.get("score", 0):.2f} [{i.get("label", "?")}]'
+                      + ('   CONFLICT' if i.get('conflict') else ''),
+                      curses.color_pair(4) if i.get('conflict') else 0)
+            y += 1
+        if y < last:
+            others = ctx['other_findings']
+            if others:
+                txt = ', '.join(f'{_short_date(o["day"])} {o["metric"][:1]}'
+                                f'{o["z"]:+.0f}' for o in others[:8])
+                self._put(y, 3, f'this repo\'s other findings in the window: {txt}'
+                          [: max_x - 5], self.curses.A_DIM)
+            else:
+                self._put(y, 3, 'this repo\'s only finding in the window '
+                          '\u2014 a one-off, not a pattern', self.curses.A_DIM)
+            y += 1
+        if y < last:
+            pages = [r for r in self.data.funnel_data
+                     if r.get('repo_name') == row['repo']]
+            if pages:
+                top = max(pages, key=lambda r: _int(r, 'view_count'))
+                self._put(y, 3, f'busiest page (rolling 14d): '
+                          f'{_int(top, "view_count")}v/{_int(top, "unique_visitors")}u  '
+                          f'{(top.get("title") or top.get("path") or "")}'[: max_x - 5],
+                          self.curses.A_DIM)
+            else:
+                self._put(y, 3, 'no path data for this repo in the newest run',
+                          self.curses.A_DIM)
+
     def _render_momentum_detail(self, avail, max_x):
         """One repo's slope: level, day-over-day change, and direction.
 
@@ -3101,6 +3277,14 @@ class AnalyticsTUI(TuiApp):
         dim = self.curses.A_DIM
         if self.overlay:
             self.render_footer_items(max_y, [('[?]/[esc] close derivation', active)], x=1)
+            return
+        if self.drilldown_finding:
+            self.render_footer_items(max_y, [
+                ('[space/esc]back', dim),
+                ('[j/k]next finding', dim),
+                ('[?]derivation', dim),
+                ('[Q]uit', dim),
+            ], x=1)
             return
         if self.drilldown_momentum:
             self.render_footer_items(max_y, [
