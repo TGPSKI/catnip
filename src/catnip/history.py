@@ -239,9 +239,32 @@ def ingest(runs_dir, history_dir, owner, rebuild=False):
     new_dirs = [d for d in list_fetch_dirs(runs_dir)
                 if d.name not in ingested
                 and (d / "analysis" / "github_traffic_timeseries.csv").is_file()]
-    if not new_dirs:
+    # Sections added after a store was first built have to be backfilled
+    # from runs that are already marked ingested, or a store bumped to
+    # schema 2 declares sections it never fills. Both merges are max/union
+    # and therefore idempotent, so re-reading a done run costs a file read
+    # and changes nothing else. Traffic is deliberately NOT re-merged here:
+    # `fetches_ingested` is what makes ingest cheap, and max-merge already
+    # guarantees the days are right.
+    backfill = []
+    if any(section not in store for section in ("referrers", "events")):
+        done = [d for d in list_fetch_dirs(runs_dir)
+                if d.name in ingested
+                and (d / "analysis" / "github_traffic_timeseries.csv").is_file()]
+        backfill = done
+        store.setdefault("referrers", {})
+        store.setdefault("events", {})
+
+    if not new_dirs and not backfill:
         print(f"Nothing to ingest ({len(ingested)} runs already in store).")
         return store
+
+    for fetch_dir in backfill:
+        day = f"{fetch_dir.name[:4]}-{fetch_dir.name[4:6]}-{fetch_dir.name[6:8]}"
+        refs = merge_referrers(store, fetch_dir, day)
+        rel, push = merge_events(store, fetch_dir)
+        print(f"  Backfilled {fetch_dir.name}: {refs} referrer rows, "
+              f"{rel} releases, {push} commit-days")
 
     for fetch_dir in new_dirs:
         points = merge_fetch(store, fetch_dir)
@@ -253,7 +276,7 @@ def ingest(runs_dir, history_dir, owner, rebuild=False):
         print(f"  Ingested {fetch_dir.name}: {points} series points, {snaps} snapshots, "
               f"{refs} referrer rows, {rel} new releases, {push} commit-days")
 
-    latest = max(new_dirs, key=lambda d: d.name)
+    latest = max(new_dirs or backfill, key=lambda d: d.name)
     store["stars_by_month"] = events_by_month(latest, "github_stargazer_events.csv", "starred_at")
     store["forks_by_month"] = events_by_month(latest, "github_fork_events.csv", "created_at")
     store["events_era"] = "reconstructed from starred_at/created_at timestamps (all-time)"

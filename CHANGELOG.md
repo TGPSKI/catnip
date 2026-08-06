@@ -94,6 +94,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sections are spaced. Funnel columns carry readable labels (`home`,
   `docs`, `tree`) instead of four-character truncations of their internal
   names, and its selection no longer inverts a whole row of grid cells.
+- **A schema bump relabelled the store without filling it.** `ingest`
+  skips runs already in `fetches_ingested`, so a store upgraded to
+  schema 2 declared `referrers` and `events` and then never populated
+  them — the drilldown's release and push rules and the audience view's
+  referrer diversity stayed permanently empty, with nothing on screen to
+  explain why. Both merges are max/union and therefore idempotent, so
+  ingest now backfills them from already-ingested runs on disk. Traffic
+  is deliberately not re-merged: `fetches_ingested` is what keeps ingest
+  cheap.
 - **The scrollbars never rendered.** They were drawn at `max_x - 1`, and
   `TuiApp._put` rejects any `x >= max_x - 1`, so every one was silently
   dropped. The offline layout harness did not reproduce it because its
