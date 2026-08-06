@@ -330,6 +330,63 @@ def deltas(store, timeframe, end=None):
     return out
 
 
+def first_difference(values):
+    """Day-over-day change: the discrete first derivative of a series.
+
+    The level answers "how much"; this answers "getting faster or
+    slower", which is the question a delta column can only imply. Day one
+    has no predecessor and is reported as 0 rather than dropped, so the
+    result stays aligned with the days it describes.
+    """
+    return [0] + [values[i] - values[i - 1] for i in range(1, len(values))]
+
+
+def trend_slope(values):
+    """Least-squares slope of a series against its index, per day.
+
+    A single number for "which way is this going", robust to the day-to-day
+    noise that makes a first difference hard to read at a glance. Returns
+    0.0 for a series too short or too flat to have a direction.
+    """
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean_x = (n - 1) / 2
+    mean_y = sum(values) / n
+    denom = sum((i - mean_x) ** 2 for i in range(n))
+    if denom <= 0:
+        return 0.0
+    return sum((i - mean_x) * (values[i] - mean_y) for i in range(n)) / denom
+
+
+def momentum(store, repo, timeframe, end=None):
+    """Everything the momentum view draws for one repo, per metric.
+
+    `slope` is per day; `accel` is the slope of the first difference, so a
+    repo can be falling but decelerating — which reads as "the drop is
+    levelling off" and is invisible in a single delta.
+    """
+    days = window(store, timeframe, end)
+    prev_days = previous_window(store, timeframe, end)
+    out = {"days": days, "comparable": bool(prev_days)}
+    for metric in METRICS:
+        values = series(store, repo, metric, days)
+        diffs = first_difference(values)
+        prev_total = sum(series(store, repo, metric, prev_days)) if prev_days else None
+        n = max(1, len(days))
+        out[metric] = {
+            "values": values,
+            "diffs": diffs,
+            "slope": trend_slope(values),
+            "accel": trend_slope(diffs),
+            "rate": sum(values) / n,
+            "prev_rate": (prev_total / max(1, len(prev_days))) if prev_days else None,
+            "total": sum(values),
+            "prev_total": prev_total,
+        }
+    return out
+
+
 # ---- A. audience: human vs fetcher -------------------------------------------
 
 def _human_ratio(ratio):

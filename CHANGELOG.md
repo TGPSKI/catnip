@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opens an event detail screen: which repos moved that day, each one's
   |Z|, value and median, and whatever release or push it followed. Each
   row carries a colour block in the severity of its worst repo.
+- **`[space]` on a deltas row opens a momentum view.** Level, the
+  day-over-day first derivative drawn around a zero line, a least-squares
+  slope, and this window's rate against the previous one. A deltas cell
+  says a repo moved by N; it cannot say whether the move is still
+  happening, so a repo that spiked once and stopped looks identical to
+  one climbing steadily. leather reads "falling -1.15/day, decelerating"
+  while its window is still 7.6x the previous — both true, and only
+  visible together. `[enter]` still opens the generic drilldown.
 - **The funnel is two tables, and now behaves like it.** `[space]` walks
   down into the selected repo's pages and back out; each pane keeps its
   own sort, cursor and scrollbar; and the grid gained a `uniq` column
@@ -110,6 +118,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns whatever the selector said, so "last 7 days" drew nine years.
   Weeks that overlap the window count, since commit_activity is weekly,
   and the title says how many weeks that turned out to be.
+- **Deltas gained a sort** (movement, clones, views, Δclones, Δviews,
+  rate, name) under the same `s`/`S` contract as every other view.
 - **One sort contract everywhere: `s` picks the column, `S` picks the
   direction.** Each column carried its own natural direction, so cycling
   columns silently reversed the order — and the audience view opened
@@ -194,6 +204,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windowed totals and daily series now read the durable store at *every*
   timeframe rather than only at `all`, so a window means the same thing on
   day 1 and day 600.
+
+### Changed (development)
+
+- **`make quick` (~4s) alongside `make check` (~45s, was ~103s).** The pty
+  smoke was 96% of the wall clock — it spawns real terminals and sleeps
+  0.35s per keypress — and one test spent ~38s re-proving a view x
+  timeframe cross-product that `test_tui_layout` already asserts offline
+  against a character grid, ~400x faster. The pty suite now covers only
+  what a terminal can uniquely prove: that curses does not raise.
 
 ### Fixed
 

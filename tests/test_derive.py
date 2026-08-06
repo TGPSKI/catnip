@@ -509,3 +509,54 @@ class FunnelClassificationTests(unittest.TestCase):
                          ("/o/r/blob/main/x.go", 60))
         ]
         self.assertAlmostEqual(D.funnel_depth(rows)["r"]["depth_ratio"], 2.0)
+
+
+class MomentumTests(unittest.TestCase):
+    """Level says how much; slope says whether it is still happening.
+
+    A repo that spiked once and stopped and a repo climbing steadily can
+    show the same delta, and the deltas column cannot tell them apart.
+    """
+
+    def test_first_difference_is_aligned_with_its_days(self):
+        self.assertEqual(D.first_difference([5, 7, 4]), [0, 2, -3])
+
+    def test_first_difference_of_a_flat_series_is_zero(self):
+        self.assertEqual(D.first_difference([3, 3, 3]), [0, 0, 0])
+
+    def test_slope_signs_the_direction(self):
+        self.assertGreater(D.trend_slope([1, 2, 3, 4]), 0)
+        self.assertLess(D.trend_slope([4, 3, 2, 1]), 0)
+        self.assertEqual(D.trend_slope([2, 2, 2, 2]), 0.0)
+
+    def test_slope_is_per_step(self):
+        self.assertAlmostEqual(D.trend_slope([0, 2, 4, 6]), 2.0)
+
+    def test_degenerate_series_have_no_direction(self):
+        self.assertEqual(D.trend_slope([]), 0.0)
+        self.assertEqual(D.trend_slope([7]), 0.0)
+
+    def test_a_spike_that_stopped_reads_as_falling(self):
+        # The distinction the view exists for: same total, opposite story.
+        spiked = store({"a": flat("clones", [0, 0, 90, 1, 1, 1, 1])})
+        climbing = store({"a": flat("clones", [1, 4, 8, 14, 21, 22, 24])})
+        self.assertLess(D.momentum(spiked, "a", "1w")["clones"]["slope"], 0)
+        self.assertGreater(D.momentum(climbing, "a", "1w")["clones"]["slope"], 0)
+
+    def test_falling_but_decelerating_is_expressible(self):
+        # A drop that is levelling off: negative slope, positive accel.
+        s = store({"a": flat("clones", [50, 30, 18, 11, 7, 5, 4])})
+        m = D.momentum(s, "a", "1w")["clones"]
+        self.assertLess(m["slope"], 0)
+        self.assertGreater(m["accel"], 0)
+
+    def test_rate_comparison_is_absent_without_a_previous_window(self):
+        s = store({"a": flat("clones", [1] * 5)})
+        self.assertIsNone(D.momentum(s, "a", "1w")["clones"]["prev_rate"])
+
+    def test_momentum_covers_both_metrics(self):
+        s = store({"a": dict(flat("clones", [1] * 14), **flat("views", [2] * 14))})
+        m = D.momentum(s, "a", "2w")
+        self.assertIn("clones", m)
+        self.assertIn("views", m)
+        self.assertEqual(len(m["clones"]["diffs"]), len(m["days"]))

@@ -88,12 +88,20 @@ tests/                stdlib unittest; fixtures.py builds synthetic runs
 ## Development workflow
 
 ```bash
-make check         # compile + 51 tests + shell syntax — what CI gates on
+make quick         # everything except the pty smoke (~4s) — iterate on this
+make check         # compile + full suite + shell syntax — what CI gates on
 make lint          # ruff; the analyze.py exemption is deliberate, see ruff.toml
 make smoke         # drive the real TUI in a pty at three terminal sizes
 make vendor-check  # byte-identity of src/catnip/tui against PANE=../pane
 make doctor        # run catnip's own health checks against your account
 ```
+
+The pty smoke is ~90% of `make check`'s wall clock: it spawns real
+terminals and sleeps 0.35s per keypress so curses can settle. What only a
+terminal can prove is that curses does not raise; everything about
+*layout* is asserted offline against a character grid, which is why
+`test_tui_layout` sweeps every view at every timeframe and the pty suite
+deliberately does not. Iterate on `make quick`, gate on `make check`.
 
 Every test is offline: `tests/fixtures.py` writes the same file layout
 `fetch.sh` produces, so CI needs no token and cannot be rate-limited. If

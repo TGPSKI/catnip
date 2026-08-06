@@ -63,6 +63,82 @@ def scrollbar(put, curses_mod, top, height, x, total, offset, *,
             attr if in_thumb else (track_attr if track_attr is not None else A_DIM))
 
 
+def diverging_bars(put, curses_mod, top, series, height, max_x, *,
+                   title=None, title_attr=0, axis_attr=0,
+                   pos_attr=0, neg_attr=0, fmt=str, label_every=None,
+                   label_row_offset=1, bar_w=None, max_bar_w=6, gap=1,
+                   right_margin=2, zero_glyph="\u2500",
+                   no_data_text="no data available"):
+    """Signed bars above and below a zero line; return the row below.
+
+    `bar_chart` measures level and cannot draw a negative, because its
+    heights grow out of a floor at zero. A change, a delta, a derivative —
+    anything whose sign is the point — needs the axis in the middle
+    instead, or the reader has to infer direction out of a colour and take
+    it on trust.
+
+    series items are {'label', 'value'} where value may be negative. The
+    zero line always renders, including for an all-positive series, so
+    "nothing went down" is visible rather than merely absent.
+    """
+    A_DIM = curses_mod.A_DIM
+    y = top
+    if title:
+        put(y, 1, title, title_attr)
+        y += 1
+    if not series:
+        put(y, 3, no_data_text, A_DIM)
+        return y + 1
+
+    axis_w = 7
+    plot_x = axis_w + 1
+    avail = max(1, max_x - plot_x - right_margin)
+    n = len(series)
+    if bar_w is None:
+        bar_w = max(1, min(max_bar_w, avail // n - gap))
+    if n * (bar_w + gap) > avail:
+        gap = 0
+        bar_w = max(1, avail // n)
+    slot = bar_w + gap
+
+    peak = max((abs(b["value"]) for b in series), default=0)
+    # Split the height either side of the zero line, which owns its own row.
+    half = max(1, (height - 1) // 2)
+    zero_row = y + half
+
+    for i, half_label in ((0, peak), (half * 2, -peak)):
+        label = fmt(half_label)
+        put(y + i, max(0, axis_w - len(label)), label, A_DIM)
+    put(zero_row, max(0, axis_w - 1), "0", A_DIM)
+    span = min(n * bar_w + (n - 1) * gap, avail)
+    put(zero_row, axis_w, "\u253c" + zero_glyph * span, axis_attr)
+
+    for i, b in enumerate(series):
+        value = b["value"]
+        x = plot_x + i * slot
+        if not value or not peak:
+            continue
+        cells = max(1, round(abs(value) / peak * half))
+        attr = pos_attr if value > 0 else neg_attr
+        for c in range(cells):
+            row = zero_row - 1 - c if value > 0 else zero_row + 1 + c
+            if y <= row <= zero_row + half:
+                put(row, x, "\u2588" * bar_w, attr)
+
+    step = label_every or max(1, -(-(max(len(str(b["label"])) for b in series) + 1) // slot))
+    label_row = zero_row + half + label_row_offset
+    leftmost = plot_x + span + 1
+    for i in range(n - 1, -1, -1):
+        if (n - 1 - i) % step:
+            continue
+        label = str(series[i]["label"])
+        x = min(plot_x + i * slot, plot_x + span - len(label))
+        if x + len(label) < leftmost:
+            put(label_row, x, label, A_DIM)
+            leftmost = x
+    return label_row + 1
+
+
 def heatmap(put, curses_mod, top, max_x, *, rows, col_labels,
             label_w=None, cell_w=1, gap=0, ramp=RAMP,
             glyph_for=None, attr_for=None, label_attr=0, header_attr=0,

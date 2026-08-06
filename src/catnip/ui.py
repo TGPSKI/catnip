@@ -51,7 +51,7 @@ from catnip.tui.framework import (
     curses_main,
     read_csv,
 )
-from catnip.tui.grids import heatmap, ramp_glyph, scrollbar
+from catnip.tui.grids import diverging_bars, heatmap, ramp_glyph, scrollbar
 from catnip.tui.interact import RowCursor
 
 # Slot 2 was 'top' — repos ranked by age and stars, criteria that answered
@@ -424,6 +424,8 @@ class AnalyticsTUI(TuiApp):
         self.sort_flip = dict.fromkeys(
             (*REPO_ROW_VIEWS, 'anomaly_events', 'funnel_pages'), False)
         self.deltas_hide_zero = True   # 'z' un-collapses the unchanged rows
+        self.deltas_sort = 0      # index into DELTAS_SORT_KEYS
+        self.drilldown_momentum = None  # repo name for the slope detail
         # One cursor per view, so switching away and back lands on the row
         # you were reading rather than at the top of the list.
         self.cursors = {v: RowCursor() for v in REPO_ROW_VIEWS}
@@ -597,6 +599,9 @@ class AnalyticsTUI(TuiApp):
             if self.overlay:
                 self.overlay = False
                 return False
+            if self.drilldown_momentum:
+                self.drilldown_momentum = None
+                return False
             if self.drilldown_pair:
                 self.drilldown_pair = None
                 return False
@@ -628,11 +633,20 @@ class AnalyticsTUI(TuiApp):
         # useful, but a key you press to confirm should never be the key
         # that undoes the thing you confirmed.
         if key in (curses.KEY_ENTER, 10, 13, ord(' ')):
-            if self.drilldown_pair or self.drilldown_event or self.drilldown:
+            if (self.drilldown_momentum or self.drilldown_pair
+                    or self.drilldown_event or self.drilldown):
                 if key == ord(' '):
+                    self.drilldown_momentum = None
                     self.drilldown_pair = None
                     self.drilldown_event = None
                     self.drilldown = None
+                return False
+            if self.view == 'deltas' and key == ord(' '):
+                # [space] asks "which way is this going"; [enter] still
+                # opens the generic repo drilldown.
+                repo = self.selected_repo()
+                if repo:
+                    self.drilldown_momentum = repo
                 return False
             if self.view == 'funnel' and key == ord(' '):
                 # Down into this repo's pages, and back out again. The
@@ -659,6 +673,28 @@ class AnalyticsTUI(TuiApp):
             repo = self.selected_repo()
             if repo:
                 self.drilldown = repo
+            return False
+        if self.drilldown_momentum:
+            if key == ord('Q'):
+                return True
+            if key in (ord('q'), ord('h'), curses.KEY_LEFT,
+                       curses.KEY_BACKSPACE, 127, 8):
+                self.drilldown_momentum = None
+                return False
+            if key in (curses.KEY_DOWN, ord('j'), curses.KEY_UP, ord('k')):
+                rows = self._cursor_rows()
+                if rows:
+                    delta = 1 if key in (curses.KEY_DOWN, ord('j')) else -1
+                    cur = self.cursor('deltas').move(delta, len(rows), self._page())
+                    self.drilldown_momentum = rows[cur.index]
+                return False
+            if key in (ord('t'), ord('T')):
+                step = 1 if key == ord('t') else -1
+                self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) + step)
+                                            % len(TIMEFRAMES)]
+                return False
+            if key == ord('r'):
+                self.data.reload()
             return False
         if self.drilldown_pair:
             if key == ord('Q'):
@@ -758,6 +794,9 @@ class AnalyticsTUI(TuiApp):
             self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) + 1) % len(TIMEFRAMES)]
         elif key == ord('T'):
             self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) - 1) % len(TIMEFRAMES)]
+        elif key == ord('s') and self.view == 'deltas':
+            self.deltas_sort = (self.deltas_sort + 1) % len(self.DELTAS_SORT_KEYS)
+            self.cursor('deltas').reset()
         elif key == ord('s') and self.view == 'funnel':
             if self.funnel_pane:
                 self.pages_sort = (self.pages_sort + 1) % len(self.PAGES_SORT_KEYS)
@@ -1026,7 +1065,9 @@ class AnalyticsTUI(TuiApp):
         if avail <= 0:
             return
 
-        if self.drilldown_pair:
+        if self.drilldown_momentum:
+            self._render_momentum_detail(avail, max_x)
+        elif self.drilldown_pair:
             self._render_pair_detail(avail, max_x)
         elif self.drilldown_event:
             self._render_event_detail(avail, max_x)
@@ -1646,6 +1687,17 @@ class AnalyticsTUI(TuiApp):
                 c['merged'] += 1
         return counts
 
+    DELTAS_SORT_KEYS = (
+        ('movement', lambda r: (abs(r['clones']['delta'] or r['clones']['cur'])
+                                + abs(r['views']['delta'] or r['views']['cur'])), True),
+        ('clones', lambda r: r['clones']['cur'], True),
+        ('views', lambda r: r['views']['cur'], True),
+        ('\u0394clones', lambda r: (r['clones']['delta'] or 0), True),
+        ('\u0394views', lambda r: (r['views']['delta'] or 0), True),
+        ('rate', lambda r: r['clones']['rate'], True),
+        ('name', lambda r: r['repo'].lower(), False),
+    )
+
     def _delta_rows(self):
         """Rows for the deltas view, sorted by the size of the movement.
 
@@ -1672,8 +1724,8 @@ class AnalyticsTUI(TuiApp):
         if self.search:
             needle = self.search.lower()
             rows = [r for r in rows if needle in r['repo'].lower()]
-        return sorted(rows, key=lambda r: -(abs(r['clones']['delta'] or r['clones']['cur'])
-                                            + abs(r['views']['delta'] or r['views']['cur'])))
+        label, key, natural = self.DELTAS_SORT_KEYS[self.deltas_sort]
+        return sorted(rows, key=key, reverse=self._sort_desc(natural))
 
     def _render_deltas_view(self, avail, max_x):
         curses = self.curses
@@ -2208,6 +2260,77 @@ class AnalyticsTUI(TuiApp):
         if a >= 0.5:
             return 1
         return 2
+
+    def _render_momentum_detail(self, avail, max_x):
+        """One repo's slope: level, day-over-day change, and direction.
+
+        The deltas row says a repo moved by N. It cannot say whether the
+        move is still happening, so a repo that spiked once and stopped is
+        indistinguishable from one climbing steadily. The first difference
+        and the fitted slope are what separate them.
+        """
+        curses = self.curses
+        repo = self.drilldown_momentum
+        tf = self.timeframe
+        m = derive.momentum(self.data.history, repo, tf)
+        days, last = m['days'], avail + 1
+        win = TF_LABEL.get(tf, 'window')
+
+        self._put(2, 1, f' {repo} \u2014 momentum ', curses.color_pair(5) | curses.A_BOLD)
+        self._put(2, max_x - 34, '[space/esc] back  [j/k] next repo', self.curses.A_DIM)
+        if not days:
+            self._put(4, 3, 'No daily store yet.', self.curses.A_DIM)
+            return
+
+        clones = m['clones']
+        slope, accel = clones['slope'], clones['accel']
+        direction = 'rising' if slope > 0.05 else 'falling' if slope < -0.05 else 'flat'
+        shape = ('accelerating' if accel > 0.05 else
+                 'decelerating' if accel < -0.05 else 'steady')
+        self._put(3, 1, f'clones {direction} {slope:+.2f}/day, {shape} '
+                  f'({accel:+.2f}/day\u00b2)   {win}', curses.color_pair(3))
+        if clones['prev_rate'] is not None:
+            prev, cur = clones['prev_rate'], clones['rate']
+            ratio = (f'{cur / prev:.2f}x' if prev else 'from a standing start')
+            self._put(4, 1, f'rate {cur:.1f}/day vs {prev:.1f}/day previous window '
+                      f'\u2014 {ratio}', self.curses.A_DIM)
+        else:
+            self._put(4, 1, 'no previous window in the store yet, so no rate '
+                      'comparison', self.curses.A_DIM)
+
+        labels = [_short_date(d) for d in days]
+        plot_h = max(3, min(6, (last - 16) // 2))
+        y = 6
+        y = bar_chart(
+            self._put, curses, y,
+            [{'label': labels[i], 'count': v} for i, v in enumerate(clones['values'])],
+            plot_h, max_x, title=f'Daily clones ({clones["total"]})',
+            title_attr=curses.color_pair(6) | curses.A_BOLD,
+            axis_attr=curses.color_pair(6), color=curses.color_pair(1),
+            max_bar_w=6, value_labels=True, label_fit=True, clip_ratio=6) + 1
+        if y + plot_h + 4 <= last:
+            y = diverging_bars(
+                self._put, curses, y,
+                [{'label': labels[i], 'value': v}
+                 for i, v in enumerate(clones['diffs'])],
+                plot_h + 2, max_x,
+                title='Day-over-day change (first derivative)',
+                title_attr=curses.color_pair(6) | curses.A_BOLD,
+                axis_attr=curses.color_pair(6),
+                pos_attr=curses.color_pair(1), neg_attr=curses.color_pair(4),
+                fmt=lambda v: f'{v:+d}' if v else '0', max_bar_w=6) + 1
+
+        v = m['views']
+        if y < last:
+            vdir = ('rising' if v['slope'] > 0.05 else
+                    'falling' if v['slope'] < -0.05 else 'flat')
+            self._put(y, 1, f'views {vdir} {v["slope"]:+.2f}/day  '
+                      f'{_sparkline(v["values"])}  {v["total"]} total',
+                      curses.color_pair(2))
+            y += 1
+        if y < last:
+            self._put(y, 1, f'clones {_sparkline(clones["values"])}  '
+                      f'{clones["total"]} total', curses.color_pair(1))
 
     def _render_pair_detail(self, avail, max_x):
         """Two coupled repos, side by side, with the residuals the r is
@@ -2960,6 +3083,15 @@ class AnalyticsTUI(TuiApp):
         if self.overlay:
             self.render_footer_items(max_y, [('[?]/[esc] close derivation', active)], x=1)
             return
+        if self.drilldown_momentum:
+            self.render_footer_items(max_y, [
+                ('[space/esc]back', dim),
+                ('[j/k]next repo', dim),
+                (f'[t/T]tf:{self.timeframe}', active if self.timeframe != '2w' else dim),
+                ('[?]derivation', dim),
+                ('[Q]uit', dim),
+            ], x=1)
+            return
         if self.drilldown_pair:
             self.render_footer_items(max_y, [
                 ('[space/esc]back', dim),
@@ -3035,6 +3167,10 @@ class AnalyticsTUI(TuiApp):
             items.append(('[l]ow:hidden' if self.audience_hide_low else '[l]ow:shown',
                           active))
         elif self.view == 'deltas' and rows:
+            name, _k, natural = self.DELTAS_SORT_KEYS[self.deltas_sort]
+            items.append((f'[s]ort:{name}{self.sort_arrow(self._sort_desc(natural))}',
+                          active))
+            items.append(('[S]flip', dim))
             items.append(('[z]zero:hidden' if self.deltas_hide_zero else '[z]zero:shown',
                           active))
         elif self.view == 'table' and rows:

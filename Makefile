@@ -7,7 +7,7 @@ PANE ?= ../pane
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check compile test lint smoke shellcheck \
+.PHONY: help check quick compile test test-fast lint smoke shellcheck \
         doctor run fetch analyze history totals tui summary verify prune \
         timer-install timer-status vendor-check clean
 
@@ -18,11 +18,23 @@ help: ## Show this help
 
 check: compile test shellcheck ## Compile + full test suite + shell syntax (what CI gates on)
 
+quick: compile test-fast shellcheck ## Everything except the pty smoke — for iterating
+	@echo "quick: offline suite only. Run 'make check' before committing."
+
+
 compile: ## Byte-compile the package and tests
 	$(PY) -m compileall -q src tests
 
 test: ## unittest discovery: config, pipeline, retention, units, TUI pty smoke
 	$(PY) -m unittest discover -s tests -v
+
+# The pty smoke spawns real terminals and sleeps 0.35s per keypress to let
+# curses settle, which is ~95% of `make check`'s wall clock. Everything it
+# proves about LAYOUT is already asserted offline against a character grid;
+# what only a terminal can prove is that curses does not raise. So iterate
+# on this target and gate on `check`.
+test-fast: ## Every test except the pty smoke (~4s instead of ~45s)
+	CATNIP_SKIP_PTY=1 $(PY) -m unittest discover -s tests -v
 
 lint: ## ruff check (dev-time only; catnip itself is stdlib-only)
 	ruff check .

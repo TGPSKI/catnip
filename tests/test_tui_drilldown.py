@@ -602,3 +602,74 @@ class SortContractTests(unittest.TestCase):
         rows = app._audience_rows()
         ranked = [r["score"] for r in rows if r["label"] != "low-signal"]
         self.assertEqual(ranked, sorted(ranked, reverse=True))
+
+
+class MomentumViewTests(unittest.TestCase):
+    """[space] on a deltas row asks which way it is going."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+            history.ingest(root / "runs", root / "stats" / "history", "testuser")
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def app(self):
+        return build_tui(self.data, 40, 150, "deltas")
+
+    def test_space_opens_momentum_not_the_generic_drilldown(self):
+        app = self.app()
+        app.handle_key(ord(" "))
+        self.assertIsNotNone(app.drilldown_momentum)
+        self.assertIsNone(app.drilldown)
+
+    def test_enter_still_opens_the_generic_drilldown(self):
+        app = self.app()
+        app.handle_key(FakeCurses.KEY_ENTER)
+        self.assertIsNotNone(app.drilldown)
+        self.assertIsNone(app.drilldown_momentum)
+
+    def test_space_and_escape_both_close_it(self):
+        app = self.app()
+        app.handle_key(ord(" "))
+        app.handle_key(ord(" "))
+        self.assertIsNone(app.drilldown_momentum)
+        app.handle_key(ord(" "))
+        app.handle_key(27)
+        self.assertIsNone(app.drilldown_momentum)
+
+    def test_it_renders_for_every_repo_at_every_timeframe(self):
+        # The view body only: render() also draws the header and footer,
+        # which own rows 0-1 and the last row by design.
+        for repo in [r["repo"] for r in self.app()._delta_rows()]:
+            for tf in TIMEFRAMES:
+                for rows in (40, 24, 16):
+                    app = build_tui(self.data, rows, 150, "deltas")
+                    app.drilldown_momentum = repo
+                    app.timeframe = tf
+                    app._render_momentum_detail(rows - 3, 150)
+                    drawn = [y for y, _x, t in app.writes if str(t).strip()]
+                    if not drawn:
+                        continue
+                    self.assertLess(max(drawn), rows - 1,
+                                    f"{repo}@{tf}@{rows} drew onto the footer")
+                    self.assertGreaterEqual(min(drawn), 2,
+                                            f"{repo}@{tf}@{rows} drew into the header")
+
+    def test_deltas_sorts_follow_the_shared_contract(self):
+        app = self.app()
+        for name, _key, natural in app.DELTAS_SORT_KEYS:
+            if name == "name":
+                self.assertFalse(natural)
+            else:
+                self.assertTrue(natural, f"{name} should open biggest-first")
+        arrow = app.sort_arrow(app._sort_desc(True))
+        app.handle_key(ord("S"))
+        self.assertNotEqual(app.sort_arrow(app._sort_desc(True)), arrow)
