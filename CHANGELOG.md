@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opens an event detail screen: which repos moved that day, each one's
   |Z|, value and median, and whatever release or push it followed. Each
   row carries a colour block in the severity of its worst repo.
+- **The funnel is two tables, and now behaves like it.** `[space]` walks
+  down into the selected repo's pages and back out; each pane keeps its
+  own sort, cursor and scrollbar; and the grid gained a `uniq` column
+  (per-page uniques summed, documented as an upper bound because GitHub
+  cannot dedupe a reader across paths). Sorting pages by uniques rather
+  than views is what separates a readership from one client: 88 views
+  from 59 people beats 92 views from 1.
 - **`[space]` on a correlated pair opens both repos side by side** — each
   daily series, each residual series, the share of the account each
   accounts for, and a plain sentence about what residualizing changed. A
@@ -99,6 +106,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Every footer key is one the current screen can act on.** `[enter]repo`
   over an empty list and `[f]ilter` with one category were a legend of
   small lies the operator had to test individually.
+- **Code frequency respects `t/T`.** It charted all 52 weeks GitHub
+  returns whatever the selector said, so "last 7 days" drew nine years.
+  Weeks that overlap the window count, since commit_activity is weekly,
+  and the title says how many weeks that turned out to be.
+- **One sort contract everywhere: `s` picks the column, `S` picks the
+  direction.** Each column carried its own natural direction, so cycling
+  columns silently reversed the order — and the audience view opened
+  "sorted by score" with 0.00 at the top. Numeric columns now all open
+  biggest-first, text columns A-Z, and the flip persists across column
+  changes.
 - **Vertical rhythm across every list view** — legends, column headers
   and data no longer stack with no separation, and the drilldown's
   sections are spaced. Funnel columns carry readable labels (`home`,

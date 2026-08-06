@@ -603,6 +603,7 @@ def funnel_depth(funnel_rows):
     to the timeframe selector. The views that show it say so.
     """
     by_repo = defaultdict(lambda: defaultdict(int))
+    uniq_by_repo = defaultdict(int)
     for row in funnel_rows:
         repo = row.get("repo_name", "")
         cat = row.get("category", "") or "other"
@@ -612,7 +613,12 @@ def funnel_depth(funnel_rows):
             views = int(row.get("view_count") or 0)
         except (TypeError, ValueError):
             views = 0
+        try:
+            uniq = int(row.get("unique_visitors") or 0)
+        except (TypeError, ValueError):
+            uniq = 0
         by_repo[repo][cat] += views
+        uniq_by_repo[repo] += uniq
     out = {}
     for repo, cats in by_repo.items():
         deep = sum(cats.get(c, 0) for c in DEPTH_CATEGORIES)
@@ -624,6 +630,13 @@ def funnel_depth(funnel_rows):
             "deep": deep,
             "front": front,
             "total": total_views,
+            # Per-page uniques SUMMED. GitHub reports uniques per path and
+            # gives no way to dedupe a person across paths, so a reader who
+            # opened three pages counts three times: this is an upper bound
+            # on distinct visitors, not a count of them. It is still the
+            # right column next to views, because the ratio between them is
+            # what separates one client hammering from a real readership.
+            "uniq": uniq_by_repo[repo],
             "depth_ratio": deep / max(front, 1),
         }
     return out
@@ -766,6 +779,12 @@ DERIVATIONS = {
         "  'Got past the front door': above 1.0, more traffic reads content than",
         "  bounces off the landing page. The heatmap is row-normalized, so each",
         "  repo's MIX is comparable even when its volume is not.",
+        "",
+        "  uniq is per-page uniques SUMMED across the repo's pages. GitHub",
+        "  reports uniques per path with no way to dedupe a person across",
+        "  paths, so someone who read three pages counts three times — read it",
+        "  as an upper bound, and read views/uniq as the real signal: 92 views",
+        "  from 1 unique is one client, 88 from 59 is a readership.",
         "",
         "  TIMEFRAME DOES NOT APPLY. GitHub's popular-paths endpoint is a rolling",
         "  14-day snapshot with no dated history to store, so this view always",

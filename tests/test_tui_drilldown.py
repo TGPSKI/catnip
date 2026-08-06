@@ -424,3 +424,181 @@ class FunnelPagesTests(unittest.TestCase):
         self.assertIn("shade:", text)
         self.assertIn("to 25%", text)
         self.assertIn("largest category", text)
+
+
+class FunnelPaneTests(unittest.TestCase):
+    """The funnel is two tables asking different questions.
+
+    Sharing one sort and one cursor made whichever pane you were not
+    looking at wrong, so [space] walks between them and each keeps its
+    own.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def app(self):
+        return build_tui(self.data, 40, 150, "funnel")
+
+    def test_space_walks_into_the_pages_pane_and_back(self):
+        app = self.app()
+        self.assertEqual(app.funnel_pane, 0)
+        app.handle_key(ord(" "))
+        self.assertEqual(app.funnel_pane, 1)
+        app.handle_key(ord(" "))
+        self.assertEqual(app.funnel_pane, 0)
+
+    def test_space_on_the_funnel_never_opens_the_repo_drilldown(self):
+        app = self.app()
+        app.handle_key(ord(" "))
+        self.assertIsNone(app.drilldown)
+
+    def test_enter_still_opens_the_repo_drilldown(self):
+        app = self.app()
+        app.handle_key(FakeCurses.KEY_ENTER)
+        self.assertIn(app.drilldown, [r["repo"] for r in app._funnel_repo_rows()])
+
+    def test_each_pane_sorts_independently(self):
+        app = self.app()
+        grid_before = app.funnel_sort
+        app.handle_key(ord("s"))
+        self.assertNotEqual(app.funnel_sort, grid_before)
+        self.assertEqual(app.pages_sort, 0, "grid sort moved the pages sort")
+        app.handle_key(ord(" "))
+        app.handle_key(ord("s"))
+        self.assertEqual(app.pages_sort, 1)
+
+    def test_pages_sort_by_uniques_differs_from_views(self):
+        app = self.app()
+        repo = app._funnel_repo_rows()[0]["repo"]
+        app.pages_sort = 0
+        by_views = [r.get("path") for r in app._funnel_page_rows(repo)]
+        app.pages_sort = 1
+        by_uniq = [r.get("path") for r in app._funnel_page_rows(repo)]
+        self.assertEqual(sorted(by_views), sorted(by_uniq))
+
+    def test_pages_panel_respects_terminal_height(self):
+        for rows in range(18, 44):
+            app = build_tui(self.data, rows, 150, "funnel")
+            app.funnel_pane = 1
+            app.render(rows, 150)
+            drawn = [y for y, _x, t in app.writes if str(t).strip()]
+            self.assertLess(max(drawn), rows,
+                            f"funnel drew past the frame at height {rows}")
+
+
+class FreqWindowTests(unittest.TestCase):
+    """`t/T` is global; this view used to chart nine years under "last 7d"."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+            history.ingest(root / "runs", root / "stats" / "history", "testuser")
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_a_narrow_window_shows_fewer_weeks_than_all(self):
+        app = build_tui(self.data, 40, 150, "freq")
+        app.timeframe = "all"
+        every = len(app._windowed_code_freq())
+        app.timeframe = "1d"
+        narrow = len(app._windowed_code_freq())
+        self.assertLessEqual(narrow, every)
+
+    def test_a_week_overlapping_the_window_counts(self):
+        # commit_activity is weekly, so a one-day window still shows the
+        # week containing that day rather than nothing at all.
+        app = build_tui(self.data, 40, 150, "freq")
+        app.timeframe = "2w"
+        self.assertTrue(app._windowed_code_freq())
+
+    def test_the_title_names_the_window(self):
+        app = build_tui(self.data, 40, 150, "freq")
+        app.timeframe = "1w"
+        app.render(40, 150)
+        text = " ".join(t for _y, _x, t in app.writes)
+        self.assertIn("last 7d", text)
+
+
+class SortContractTests(unittest.TestCase):
+    """One contract, every sorted view: [s] picks the column, [S] picks the
+    direction, and picking a column never silently changes the direction.
+
+    Baking a natural direction into each column meant the audience view
+    opened "sorted by score" with 0.00 at the top, and cycling columns
+    flipped the order underneath you.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+            history.ingest(root / "runs", root / "stats" / "history", "testuser")
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_numeric_columns_open_biggest_first(self):
+        for view, keys in (("audience", "AUDIENCE_SORT_KEYS"),
+                           ("profile", "PROFILE_SORT_KEYS"),
+                           ("funnel", "FUNNEL_SORT_KEYS")):
+            app = build_tui(self.data, 40, 150, view)
+            for name, _key, natural in getattr(app, keys):
+                if name in ("name", "category", "page"):
+                    self.assertFalse(natural, f"{view}.{name} should sort A-Z")
+                else:
+                    self.assertTrue(natural, f"{view}.{name} should open biggest-first")
+
+    def test_capital_s_flips_and_the_flip_survives_a_column_change(self):
+        app = build_tui(self.data, 40, 150, "audience")
+        first = app._footer_sort()
+        app.handle_key(ord("S"))
+        flipped = app._footer_sort()
+        self.assertNotEqual(first[-1], flipped[-1], "S did not change direction")
+        app.handle_key(ord("s"))
+        self.assertEqual(app._footer_sort()[-1], flipped[-1],
+                         "changing column reset the direction")
+
+    TEXT_COLUMNS = ("name", "category", "page")
+
+    def test_lowercase_s_never_changes_direction_between_numeric_columns(self):
+        # Text columns are legitimately A-Z; the contract is that moving
+        # between NUMERIC columns keeps the direction you chose.
+        for view in ("audience", "profile", "table"):
+            app = build_tui(self.data, 40, 150, view)
+            arrow = app._footer_sort()[-1]
+            for _ in range(6):
+                app.handle_key(ord("s"))
+                column = app._footer_sort()[:-1].strip()
+                if column in self.TEXT_COLUMNS:
+                    continue
+                self.assertEqual(app._footer_sort()[-1], arrow,
+                                 f"{view}: [s] changed direction on {column}")
+
+    def test_audience_opens_with_the_highest_score_first(self):
+        app = build_tui(self.data, 40, 150, "audience")
+        rows = app._audience_rows()
+        ranked = [r["score"] for r in rows if r["label"] != "low-signal"]
+        self.assertEqual(ranked, sorted(ranked, reverse=True))

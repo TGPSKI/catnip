@@ -409,13 +409,20 @@ class AnalyticsTUI(TuiApp):
         self.profile_hide_low = True   # 'l' shows the unrankable repos
         self.anomaly_filter = 0   # 0=all, 1=extreme, 2=significant, 3=minor
         self.funnel_filter = 0    # index into funnel categories (0=all)
+        # The funnel is two tables with different questions, so they get
+        # different sorts and their own cursors; [tab] chooses which one
+        # j/k and s act on.
+        self.funnel_pane = 0      # 0 = the repo grid, 1 = top pages
+        self.funnel_sort = 0      # index into FUNNEL_SORT_KEYS
+        self.pages_sort = 0       # index into PAGES_SORT_KEYS
         self.audience_sort = 0    # index into AUDIENCE_SORT_KEYS
         self.traffic_pane = 0     # 0 = top views list, 1 = top clones
         self.audience_hide_low = True   # 'l' shows the unclassifiable repos
         # Sort direction per view. Every sorted view shows an arrow, because
         # "sort: score" over a column whose smallest value is on top reads
         # as a bug whatever the reason for it.
-        self.sort_flip = dict.fromkeys((*REPO_ROW_VIEWS, 'anomaly_events'), False)
+        self.sort_flip = dict.fromkeys(
+            (*REPO_ROW_VIEWS, 'anomaly_events', 'funnel_pages'), False)
         self.deltas_hide_zero = True   # 'z' un-collapses the unchanged rows
         # One cursor per view, so switching away and back lands on the row
         # you were reading rather than at the top of the list.
@@ -426,6 +433,7 @@ class AnalyticsTUI(TuiApp):
         # Correlation rows are pairs, not repos, so they cannot share the
         # repo cursor either.
         self.cursors['correlation_pairs'] = RowCursor()
+        self.cursors['funnel_pages'] = RowCursor()
         self.anomaly_pane = 1     # 0 = account events, 1 = the repo x day grid
         self.event_sort = 0       # index into EVENT_SORT_KEYS
         # First visible day in the grid, or None to pin to the newest. A
@@ -626,6 +634,14 @@ class AnalyticsTUI(TuiApp):
                     self.drilldown_event = None
                     self.drilldown = None
                 return False
+            if self.view == 'funnel' and key == ord(' '):
+                # Down into this repo's pages, and back out again. The
+                # grid and the page list are one question at two depths,
+                # so space walks between them; [enter] still opens the
+                # full repo drilldown.
+                self.funnel_pane = 1 - self.funnel_pane
+                self.cursors['funnel_pages'].reset()
+                return False
             if self.view == 'correlation':
                 pairs = self.data.coupled(self.timeframe)['pairs']
                 if pairs:
@@ -742,6 +758,16 @@ class AnalyticsTUI(TuiApp):
             self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) + 1) % len(TIMEFRAMES)]
         elif key == ord('T'):
             self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) - 1) % len(TIMEFRAMES)]
+        elif key == ord('s') and self.view == 'funnel':
+            if self.funnel_pane:
+                self.pages_sort = (self.pages_sort + 1) % len(self.PAGES_SORT_KEYS)
+                self.cursors['funnel_pages'].reset()
+            else:
+                self.funnel_sort = (self.funnel_sort + 1) % len(self.FUNNEL_SORT_KEYS)
+                self.cursor('funnel').reset()
+        elif key == ord('S') and self.view == 'funnel':
+            which = 'funnel_pages' if self.funnel_pane else 'funnel'
+            self.sort_flip[which] = not self.sort_flip.get(which, False)
         elif key == ord('s') and self.view == 'anomaly' and self.anomaly_pane == 0:
             self.event_sort = (self.event_sort + 1) % len(self.EVENT_SORT_KEYS)
             self.cursors['anomaly_events'].reset()
@@ -767,6 +793,9 @@ class AnalyticsTUI(TuiApp):
             self.cursor('traffic').reset()
         elif key == ord('\t') and self.view == 'anomaly':
             self.anomaly_pane = 1 - self.anomaly_pane
+        elif key == ord('\t') and self.view == 'funnel':
+            self.funnel_pane = 1 - self.funnel_pane
+            self.cursors['funnel_pages'].reset()
         elif (self.view == 'anomaly'
               and key in (ord('h'), ord('l'), curses.KEY_LEFT, curses.KEY_RIGHT)):
             days = self.data.window_days(self.timeframe)
@@ -829,6 +858,20 @@ class AnalyticsTUI(TuiApp):
                 cur.home(len(events), page)
             else:
                 cur.end(len(events), page)
+            return
+        if self.view == 'funnel' and self.funnel_pane == 1:
+            repo = (self._funnel_repo_rows() or [{}])[
+                self.cursor('funnel').index if self._funnel_repo_rows() else 0].get('repo')
+            total = len(self._funnel_page_rows(repo)) if repo else 0
+            cur = self.cursors['funnel_pages']
+            if key in (curses.KEY_UP, ord('k')):
+                cur.move(-1, total, page)
+            elif key in (curses.KEY_DOWN, ord('j')):
+                cur.move(1, total, page)
+            elif key == ord('g'):
+                cur.home(total, page)
+            else:
+                cur.end(total, page)
             return
         if self.view == 'correlation':
             pairs = self.data.coupled(self.timeframe)['pairs']
@@ -1182,8 +1225,12 @@ class AnalyticsTUI(TuiApp):
 
     # ---- A. audience: human vs fetcher ---------------------------------
 
+    # Every numeric column sorts biggest-first; only names go A-Z. Baking
+    # a per-column direction meant [s] silently changed the ORDER as well
+    # as the column — score opened ascending, so a 0.00 sat at the top of
+    # a list sorted "by score". Direction is [S]'s job and nothing else's.
     AUDIENCE_SORT_KEYS = (
-        ('score', lambda r: r['score'], False),
+        ('score', lambda r: r['score'], True),
         ('ratio', lambda r: r['ratio'], True),
         ('burst', lambda r: (r['burst'] if r['burst'] is not None else -1), True),
         ('clones', lambda r: r['clones'], True),
@@ -1485,9 +1532,38 @@ class AnalyticsTUI(TuiApp):
             color = palette[idx % len(palette)] if idx < 6 else self.curses.A_DIM
             self._put(6 + i, 3, f'{lang:<18} {bar:<{bar_w}} {tb:>12,} ({pct:>5.2f}%) {rc:>3}', color)
 
+    def _windowed_code_freq(self):
+        """Commit weeks that overlap the selected window.
+
+        This view ignored t/T and always drew all 52 weeks GitHub returns,
+        so "last 7 days" charted nine years. commit_activity is weekly, so
+        a week counts when it overlaps the window at all — a 1d window
+        still shows the week containing that day, and the title says so
+        rather than implying the count is for the day.
+        """
+        rows = self._filtered(self.data.code_freq)
+        days = self.data.window_days(self.timeframe)
+        if not days or DAY_WINDOW.get(self.timeframe) is None:
+            return rows
+        first, last = days[0], days[-1]
+        out = []
+        for row in rows:
+            epoch = _int(row, 'week_epoch')
+            if not epoch:
+                continue
+            try:
+                start = date.fromtimestamp(epoch)
+            except (ValueError, OSError, OverflowError):
+                continue
+            end = start + timedelta(days=6)
+            if start.isoformat() <= last and end.isoformat() >= first:
+                out.append(row)
+        return out
+
     def _render_freq_view(self, avail, max_x):
         curses = self.curses
-        freq = self._filtered(self.data.code_freq)
+        win = TF_LABEL.get(self.timeframe, 'window')
+        freq = self._windowed_code_freq()
         if not freq:
             self._put(2, 1, 'Code Frequency (Weekly Commits)',
                       curses.color_pair(6) | self.curses.A_BOLD)
@@ -1519,7 +1595,8 @@ class AnalyticsTUI(TuiApp):
         plot_h = max(3, min(10, avail - 8))
         y = self._bar_chart(
             2, series, max_x, plot_h, curses.color_pair(1), bin_unit='w',
-            title=f'Code Frequency — weekly commits across all repos ({total:,} total)')
+            title=f'Code Frequency — weekly commits, {win} '
+                  f'({total:,} commits in {len(series)} week(s) overlapping the window)')
         # Top repos by commits underneath.
         by_repo = defaultdict(int)
         for r in freq:
@@ -2308,6 +2385,27 @@ class AnalyticsTUI(TuiApp):
         'pulse': 4, 'releases': 4,
     }
 
+    FUNNEL_SORT_KEYS = (
+        ('depth', lambda r: (r['depth_ratio'], r['total']), True),
+        ('views', lambda r: r['total'], True),
+        ('uniq', lambda r: (r['uniq'], r['total']), True),
+        ('name', lambda r: r['repo'].lower(), False),
+    )
+
+    PAGES_SORT_KEYS = (
+        ('views', lambda r: _int(r, 'view_count'), True),
+        ('uniq', lambda r: _int(r, 'unique_visitors'), True),
+        ('category', lambda r: (r.get('category', ''), -_int(r, 'view_count')), False),
+        ('page', lambda r: (r.get('title') or r.get('path') or '').lower(), False),
+    )
+
+    def _funnel_page_rows(self, repo):
+        """The selected repo's pages, under the pages pane's own sort."""
+        rows = [r for r in self.data.funnel_data if r.get('repo_name') == repo]
+        name, key, natural = self.PAGES_SORT_KEYS[self.pages_sort]
+        desc = natural != self.sort_flip.get('funnel_pages', False)
+        return sorted(rows, key=key, reverse=desc)
+
     def _funnel_repo_rows(self):
         """Per-repo funnel rows, deepest first, after the category filter."""
         rows = [r for r in self.data.funnel_depth().values()
@@ -2319,7 +2417,9 @@ class AnalyticsTUI(TuiApp):
         if self.search:
             needle = self.search.lower()
             rows = [r for r in rows if needle in r['repo'].lower()]
-        return sorted(rows, key=lambda r: (-r['depth_ratio'], -r['total']))
+        name, key, natural = self.FUNNEL_SORT_KEYS[self.funnel_sort]
+        desc = natural != self.sort_flip.get('funnel', False)
+        return sorted(rows, key=key, reverse=desc)
 
     def _render_funnel_pages(self, y, avail, max_x, repo):
         """The selected repo's actual pages, biggest first.
@@ -2327,38 +2427,61 @@ class AnalyticsTUI(TuiApp):
         The grid says what KIND of page was read; it can never say which
         one. "docs outdrew the landing page 2:1" is the finding, but the
         thing you act on is which document.
+
+        Its own cursor, sort and scrollbar: this table answers a different
+        question from the grid above it, so sharing their controls made
+        one of them wrong whichever way it was pointed.
         """
         curses = self.curses
         if y >= avail or not repo:
             return y
-        rows = [r for r in self.data.funnel_data if r.get('repo_name') == repo]
-        rows.sort(key=lambda r: -_int(r, 'view_count'))
-        self._put(y, 1, f'Top pages — {repo}',
-                  curses.color_pair(6) | self.curses.A_BOLD)
+        focused = self.funnel_pane == 1
+        rows = self._funnel_page_rows(repo)
+        name, _k, natural = self.PAGES_SORT_KEYS[self.pages_sort]
+        arrow = self.sort_arrow(natural != self.sort_flip.get('funnel_pages', False))
+        head = f'Top pages — {repo}  [sort: {name} {arrow}]'
+        self._put(y, 1, head, curses.color_pair(6) | self.curses.A_BOLD)
+        self._put(y, len(head) + 3,
+                  '[s]ort  [j/k] scroll' if focused else '[tab] to focus',
+                  curses.color_pair(5) if focused else self.curses.A_DIM)
         y += 1
         if not rows:
             self._put(y, 3, 'no page data for this repo in the newest run',
                       self.curses.A_DIM)
             return y + 1
-        peak = _int(rows[0], 'view_count') or 1
         bar_w = 12
-        path_w = max(20, max_x - bar_w - 44)
+        path_w = max(20, max_x - bar_w - 46)
         self._put(y, 3, f'  {"category":<14} {"views":>6} {"uniq":>5}  {"":<{bar_w}} page',
                   curses.color_pair(2) | self.curses.A_BOLD)
         y += 1
-        for row in rows[: max(0, avail - y + 1)]:
-            if y > avail:
-                break
+        # Whatever rows are left between here and the footer, and not one
+        # more: the panel used to draw until it ran out of data.
+        page = max(1, avail - y + 1)
+        cur = self.cursors['funnel_pages'].clamp(len(rows), page)
+        peak = max((_int(r, 'view_count') for r in rows), default=1) or 1
+        for i, row in enumerate(rows[cur.scroll:cur.scroll + page]):
             cat = row.get('category', '')
             views = _int(row, 'view_count')
             uniq = _int(row, 'unique_visitors')
-            page = (row.get('title') or row.get('path') or '')[:path_w]
+            label = (row.get('title') or row.get('path') or '')[:path_w]
             pair = self.FUNNEL_COLORS.get(cat, 0)
             color = curses.color_pair(pair) if pair else self.curses.A_DIM
-            self._put(y, 3, f'  {self.FUNNEL_LABELS.get(cat, cat)[:14]:<14} {views:>6} '
-                      f'{uniq:>5}  {self._hbar(views, peak, bar_w):<{bar_w}} {page}', color)
-            y += 1
-        return y
+            selected = focused and cur.scroll + i == cur.index
+            # Caret and right-edge marker, never a full-row inverse: the
+            # row ends in a bar and a path, and reverse video across them
+            # buries both. Same idiom as every other list in the app.
+            self._put(y + i, 3,
+                      f'{">" if selected else " "} '
+                      f'{self.FUNNEL_LABELS.get(cat, cat)[:14]:<14}',
+                      curses.color_pair(5) if selected else color)
+            self._put(y + i, 3 + 2 + 14,
+                      f' {views:>6} {uniq:>5}  '
+                      f'{self._hbar(views, peak, bar_w):<{bar_w}} {label}', color)
+            self._mark_selected(y + i, max_x, selected)
+        self._scrollbar(y, page, len(rows), cur.scroll, max_x)
+        if len(rows) > page:
+            self.scroll_indicator(y - 2, max_x, len(rows), page)
+        return y + min(page, len(rows))
 
     def _render_funnel_view(self, avail, max_x):
         """Content mix as a row-normalized heatmap, plus a depth leaderboard.
@@ -2372,11 +2495,15 @@ class AnalyticsTUI(TuiApp):
         filt = ('all' if not 0 < self.funnel_filter <= len(cats)
                 else cats[self.funnel_filter - 1])
         rows = self._funnel_repo_rows()
-        self._put(2, 1, f'Funnel \u2014 content mix and depth  [f]ilter: {filt}',
+        gname, _gk, gnat = self.FUNNEL_SORT_KEYS[self.funnel_sort]
+        garrow = self.sort_arrow(gnat != self.sort_flip.get('funnel', False))
+        self._put(2, 1, f'Funnel \u2014 content mix and depth  [f]ilter: {filt}  '
+                  f'[sort: {gname} {garrow}]'
+                  + ('' if self.funnel_pane else '   [tab] to top pages'),
                   curses.color_pair(6) | self.curses.A_BOLD)
         self._put(3, 1, 'Row = one repo, shaded by share of ITS OWN busiest category. '
-                  'depth = (docs+code+tree)/home; * = no home views. Rolling 14d ([?]).',
-                  self.curses.A_DIM)
+                  'depth = (docs+code+tree)/home; * = no home views. uniq sums per-page '
+                  'uniques, so it over-counts ([?]). Rolling 14d.', self.curses.A_DIM)
         # The ramp was four unexplained fill weights. Naming the steps is
         # the difference between a texture and a measurement.
         x = 1
@@ -2402,12 +2529,25 @@ class AnalyticsTUI(TuiApp):
         columns = [c for c, _n in sorted(totals.items(), key=lambda kv: -kv[1])][:10]
         name_w = min(22, max(10, max_x - 4 * len(columns) - 30))
 
-        self._put(6, 3 + name_w + 1 + 5 * len(columns) + 2, 'depth   views',
+        self._put(6, 3 + name_w + 1 + 5 * len(columns) + 2, 'depth   views   uniq',
                   curses.color_pair(2) | self.curses.A_BOLD)
         # Reserve the bottom third for the selected repo's actual pages —
         # a category mix says what KIND of page was read, never which one.
-        pages_h = min(9, max(4, avail // 3))
-        page = max(1, avail - 7 - pages_h)
+        # The pages panel follows the GRID's height with a fixed two-row
+        # gap, and the legend sits on the last drawable row.
+        #
+        # Both halves of that matter. Anchoring the panel to the selected
+        # repo's page count made it slide up the screen whenever you moved
+        # the cursor to a quieter repo — the layout moving because the data
+        # changed. Pinning it to the bottom instead fixed that and left a
+        # lake of blank rows between the tables. The grid's row count is
+        # constant while the cursor moves, so following it is stable AND
+        # tight; it only shifts when a sort or filter genuinely changes how
+        # many repos there are.
+        legend_row = avail + 1
+        GRID_TOP, GAP, MIN_PAGES_BLOCK = 8, 2, 6
+        max_grid = max(1, legend_row - MIN_PAGES_BLOCK - GAP - GRID_TOP)
+        page = max(1, min(len(rows), max_grid))
         cur = self.cursor('funnel').clamp(len(rows), page)
         self.scroll = cur.scroll
 
@@ -2448,14 +2588,17 @@ class AnalyticsTUI(TuiApp):
             # of this repo's traffic went past a front door nobody used".
             shown = ('  n/a' if not row['front'] and not row['deep']
                      else f'{deep:>5.2f}' if row['front'] else f'{row["deep"]:>4}*')
-            self._put(8 + i, num_x, f'{shown:>5}  {_compact_num(row["total"]):>6}',
+            self._put(8 + i, num_x,
+                      f'{shown:>5}  {_compact_num(row["total"]):>6} '
+                      f'{_compact_num(row["uniq"]):>6}',
                       curses.color_pair(5) if idx == cur.index else color)
             self._mark_selected(8 + i, max_x, idx == cur.index)
         self._scrollbar(8, page, len(rows), cur.scroll, max_x)
         self.scroll_indicator(2, max_x, len(rows), page)
         selected = rows[cur.index]['repo'] if rows else None
-        end_row = self._render_funnel_pages(8 + min(page, len(rows)) + 1, avail,
-                                            max_x, selected)
+        pages_top = GRID_TOP + min(page, len(rows)) + GAP
+        self._render_funnel_pages(pages_top, legend_row - 1, max_x, selected)
+        end_row = legend_row
         if end_row <= avail + 1:
             legend_x = 3
             for cat in columns:
@@ -2868,7 +3011,7 @@ class AnalyticsTUI(TuiApp):
         if self.data.knows_forks():
             items.append((f'[o]{self.scope_label()}',
                           active if self.scope_label() != 'all' else dim))
-        if rows:
+        if rows and self.view != 'funnel':
             items.append(('[space]repo', active))
         if self.view == 'anomaly' and self.data.anomalies(self.timeframe)['days']:
             items.append((f'[f]ilter:{self.ANOMALY_SEVERITIES[self.anomaly_filter]}',
@@ -2901,6 +3044,20 @@ class AnalyticsTUI(TuiApp):
             if len(statuses) > 1:
                 items.append((f'[f]ilter:{self._table_status()}', active))
         elif self.view == 'funnel' and rows:
+            if self.funnel_pane:
+                name = self.PAGES_SORT_KEYS[self.pages_sort][0]
+                nat = self.PAGES_SORT_KEYS[self.pages_sort][2]
+                flip = self.sort_flip.get('funnel_pages', False)
+                items.append((f'[s]ort:pages {name}{self.sort_arrow(nat != flip)}', active))
+                items.append(('[space/tab]back to grid', active))
+            else:
+                name = self.FUNNEL_SORT_KEYS[self.funnel_sort][0]
+                nat = self.FUNNEL_SORT_KEYS[self.funnel_sort][2]
+                flip = self.sort_flip.get('funnel', False)
+                items.append((f'[s]ort:{name}{self.sort_arrow(nat != flip)}', active))
+                items.append(('[space/tab]pages', active))
+                items.append(('[enter]repo', dim))
+            items.append(('[S]flip', dim))
             cats = self._funnel_categories()
             if len(cats) > 1:
                 filt = ('all' if not 0 < self.funnel_filter <= len(cats)

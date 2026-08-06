@@ -387,6 +387,25 @@ class FunnelDepthTests(unittest.TestCase):
         self.assertGreater(rows["leather"]["depth_ratio"], 1.0)
         self.assertLess(rows["bounce"]["depth_ratio"], 1.0)
 
+    def test_uniques_are_summed_per_page_and_documented_as_an_upper_bound(self):
+        # GitHub gives uniques per path with no way to dedupe a person
+        # across paths, so a reader who opened three pages counts three
+        # times. The number is still useful next to views; the derivation
+        # has to say what it is.
+        rows = [
+            {"repo_name": "r", "category": "overview", "view_count": "100",
+             "unique_visitors": "37"},
+            {"repo_name": "r", "category": "doc_blob", "view_count": "88",
+             "unique_visitors": "59"},
+        ]
+        self.assertEqual(D.funnel_depth(rows)["r"]["uniq"], 96)
+        text = "\n".join(D.DERIVATIONS["funnel"])
+        self.assertIn("upper bound", text)
+
+    def test_missing_uniques_are_zero_not_an_exception(self):
+        rows = [{"repo_name": "r", "category": "overview", "view_count": "5"}]
+        self.assertEqual(D.funnel_depth(rows)["r"]["uniq"], 0)
+
     def test_no_overview_does_not_divide_by_zero(self):
         rows = D.funnel_depth([{"repo_name": "x", "category": "doc_blob",
                                 "view_count": "5"}])
