@@ -55,14 +55,34 @@ class TuiSmokeTests(unittest.TestCase):
         os.environ["PYTHONPATH"] = SRC + os.pathsep + os.environ.get("PYTHONPATH", "")
 
     def test_every_view_renders(self):
-        # '1'..'=' jump straight to each view; then quit.
-        self.smoke("1234567890-=q")
+        # '1'..'0' jump straight to each view; then quit.
+        self.smoke("1234567890q")
 
     def test_timeframes_and_sorts_cycle(self):
-        self.smoke("tttTTTssffq")
+        # Five timeframes now, 'epoch' included, and every view respects
+        # them — so cycling has to be safe from whatever view is up.
+        self.smoke("tttttTTTTTssffq")
+
+    def test_every_view_at_every_timeframe(self):
+        for view in "1234567890":
+            self.smoke(view + "ttttt" + "TTTTT" + "q")
 
     def test_scrolling_and_search(self):
         self.smoke("3jjkkGg/alpha\rq")
+
+    def test_drilldown_opens_and_closes_from_every_row_view(self):
+        # [enter] on a repo row, walk to the neighbouring repo, come back.
+        for view in "236780":
+            self.smoke(view + "\rjk\x1bq")
+
+    def test_drilldown_quits_without_going_back_first(self):
+        # Q from three layers deep must leave, or the only exit is guessing
+        # how many escapes are owed.
+        self.smoke("3\r?Q")
+
+    def test_derivation_overlay_opens_on_every_view(self):
+        for view in "1234567890":
+            self.smoke(view + "?q" + "q")
 
     def test_minimum_terminal_size_refuses_instead_of_garbling(self):
         # 60x16 is the documented floor; below it the framework must say so

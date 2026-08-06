@@ -1,0 +1,837 @@
+#!/usr/bin/env python3
+"""Derived metrics over the durable daily store.
+
+Every windowed number the TUI shows is computed here, and every one of
+them is computed from `<data>/stats/history/traffic_daily.json` — never
+from GitHub's rolling 14-day totals.
+
+That is not a preference. The rolling totals are non-monotonic: their
+left edge falls off every day, so the difference between two consecutive
+snapshots of them is a mixture of "what happened since" and "what aged
+out", with no way to separate the two. A view built on that difference
+reports artifacts and reports them confidently — a repository whose clone
+count "fell by 301" when nothing at all happened to it. The store is
+append-only and max-merged, so a window over it means the same thing on
+day 1 and on day 600.
+
+Two conventions hold throughout:
+
+- **Uniques, not raw counts, for anything about people.** Raw counts
+  include the operator's own traffic and one crawler's repetition; the
+  API cannot exclude either. `field=0` selects the raw count and
+  `field=1` the uniques, and every human-behavior metric here passes 1.
+- **An absent input is not a zero.** A component that cannot be computed
+  (no referrer history, too few unique visitors for a per-visitor rate)
+  is reported as None and dropped from its composite, whose weights are
+  renormalized over what remains. Scoring it zero would say "this repo
+  has no human audience" when the truth is "catnip has not observed
+  enough to say".
+
+`DERIVATIONS` holds the formula, thresholds and inputs for each derived
+view; the TUI renders it as the `[?]` overlay. A score the operator
+cannot explain from inside the TUI is a defect, so a new derived
+quantity here is expected to arrive with its entry there.
+"""
+from __future__ import annotations
+
+import math
+from collections import defaultdict
+from datetime import date, timedelta
+
+#: Trailing days per timeframe key. None means "the whole store".
+WINDOW_DAYS = {"1d": 1, "1w": 7, "2w": 14, "all": None, "epoch": None}
+
+METRICS = ("clones", "views")
+RAW, UNIQ = 0, 1
+
+# ---- audience calibration ----------------------------------------------------
+# Tunable, and surfaced in the [?] overlay precisely so they can be argued
+# with against live data rather than trusted.
+RATIO_HUMAN = 0.5     # clones per visitor at or below this reads as pure audience
+RATIO_CRAWLER = 20.0  # and at or above this as a fetcher fleet
+DEPTH_BAND = (1.5, 8.0)   # views per unique visitor that a person plausibly browses
+DEPTH_MIN_VISITORS = 3    # below this the per-visitor rate is one client, not a rate
+BURST_MIN_DAYS = 7        # burst is meaningless when the window is a day or two
+REFERRER_FULL = 5         # distinct referrers that count as fully diverse
+AUDIENCE_WEIGHTS = {"ratio": 0.45, "burst": 0.20, "depth": 0.20, "referrers": 0.15}
+AUDIENCE_BANDS = ((0.60, "audience"), (0.30, "mixed"), (0.0, "crawler"))
+# Below this many unique cloners + visitors there is nothing to classify.
+# A repo with five unique cloners and two unique visitors is not "between
+# human and fetcher" — the composite simply has four data points and
+# "mixed" reads as a finding when it is an absence of one. Same cutoff and
+# same reasoning as INTENT_LOW_SIGNAL; the two views must not disagree
+# about whether a repo has enough traffic to be described.
+AUDIENCE_MIN_SIGNAL = 10
+
+# ---- intent calibration ------------------------------------------------------
+# The score is smoothed clones PER unique visitor — a rate, not a share, so
+# it runs above 1. The old 0.5/0.2 cuts were written for a bounded 0-200
+# scale and, applied here, label ten of eleven ranked repos "developer",
+# which is a label carrying no information. 2.0 means "cloned twice for
+# every person who looked".
+INTENT_BANDS = ((2.0, "developer"), (0.75, "tooling"), (0.0, "reference"))
+INTENT_LOW_SIGNAL = 10    # uniq clones + uniq views below this cannot rank
+
+# ---- anomaly calibration -----------------------------------------------------
+Z_EXTREME, Z_SIGNIFICANT, Z_MINOR = 3.0, 2.0, 1.0
+# A materiality floor, and it is not optional. Most repos on a personal
+# account sit at zero clones for a fortnight, so ONE clone is a colossal
+# departure from their own baseline and scores |z| well past 3. Without a
+# floor, "everything that ever moved" is an anomaly, ~30 repos qualify on
+# an ordinary Tuesday, and campaign collapsing folds the whole account into
+# one event every single day. Statistically extreme is not the same as
+# worth waking up for.
+Z_MIN_VALUE = 3           # a spike of fewer events than this is not material
+CAMPAIGN_MIN_REPOS = 3    # simultaneous material spikes at/above this are one event
+
+# ---- coupling calibration ----------------------------------------------------
+COUPLE_MIN_DAYS = 7       # fewer aligned days than this is not a correlation
+LAG_MIN_DAYS = 30         # and lag needs a month before it means anything
+COUPLE_MIN_CLONES = 5     # ignore pairs of near-silent repos
+
+
+# ---- store access ------------------------------------------------------------
+
+def _repos(store):
+    return (store or {}).get("repos") or {}
+
+
+def store_days(store):
+    """Every date observed in the store, oldest first."""
+    return sorted({d for metrics in _repos(store).values()
+                   for m in METRICS for d in (metrics.get(m) or {})})
+
+
+def latest_day(store):
+    days = store_days(store)
+    return days[-1] if days else None
+
+
+def window(store, timeframe, end=None):
+    """The dates in the trailing window for `timeframe`, oldest first.
+
+    A calendar window, not the last N observations: skipping absent days
+    would silently stretch "last 7 days" across a fortnight whenever the
+    timer missed a night, and every rate computed from it would be wrong
+    by exactly the amount nobody would notice.
+    """
+    days = store_days(store)
+    if not days:
+        return []
+    end = end or days[-1]
+    n = WINDOW_DAYS.get(timeframe, 14)
+    if n is None:
+        return [d for d in days if d <= end]
+    start = (date.fromisoformat(end) - timedelta(days=n - 1)).isoformat()
+    return [d for d in days if start <= d <= end]
+
+
+def previous_window(store, timeframe, end=None):
+    """The window of the same length immediately before `window`.
+
+    Returns [] when the store does not reach back far enough — the caller
+    must then say "no comparison yet" rather than compare against a
+    shorter span and call the difference a change.
+    """
+    cur = window(store, timeframe, end)
+    if not cur:
+        return []
+    n = WINDOW_DAYS.get(timeframe, 14)
+    if n is None:
+        return []
+    prev_end = (date.fromisoformat(cur[0]) - timedelta(days=1)).isoformat()
+    prev_start = (date.fromisoformat(prev_end) - timedelta(days=n - 1)).isoformat()
+    days = [d for d in store_days(store) if prev_start <= d <= prev_end]
+    return days if len(days) >= n else []
+
+
+def daily(store, repo, metric, field=RAW):
+    """{day: value} for one repo and metric; {} when the repo is unknown."""
+    slot = (_repos(store).get(repo) or {}).get(metric) or {}
+    out = {}
+    for day, val in slot.items():
+        if isinstance(val, list):
+            out[day] = val[field] if len(val) > field else 0
+        else:
+            out[day] = val if field == RAW else 0
+    return out
+
+
+def series(store, repo, metric, days, field=RAW):
+    """Values for exactly `days`, in order, zero-filling unobserved days."""
+    d = daily(store, repo, metric, field)
+    return [d.get(day, 0) for day in days]
+
+
+def total(store, repo, metric, days, field=RAW):
+    return sum(series(store, repo, metric, days, field))
+
+
+def account_series(store, metric, days, field=RAW):
+    """Account-wide daily totals over `days`."""
+    out = [0] * len(days)
+    index = {day: i for i, day in enumerate(days)}
+    for repo in _repos(store):
+        for day, val in daily(store, repo, metric, field).items():
+            i = index.get(day)
+            if i is not None:
+                out[i] += val
+    return out
+
+
+def repo_names(store):
+    return sorted(_repos(store))
+
+
+def active_repos(store, days, min_total=1):
+    """Repos with any observed traffic in `days` — the default row set for
+    every account-wide view. Ninety-eight rows of which eighty are empty
+    is not a view of an account, it is a directory listing."""
+    out = []
+    for repo in repo_names(store):
+        if sum(total(store, repo, m, days) for m in METRICS) >= min_total:
+            out.append(repo)
+    return out
+
+
+# ---- referrers and events ----------------------------------------------------
+
+def referrers_in(store, repo, days):
+    """{referrer: [count, uniques]} observed for `repo` within `days`.
+
+    None — not {} — when the store has no referrer history at all, so the
+    audience composite can tell "no referrers" apart from "never looked".
+    """
+    section = (store or {}).get("referrers")
+    if not section:
+        return None
+    seen = set(days)
+    out = {}
+    for day, table in (section.get(repo) or {}).items():
+        if day not in seen:
+            continue
+        for ref, val in table.items():
+            count, uniq = (val + [0, 0])[:2] if isinstance(val, list) else (val, 0)
+            prev = out.get(ref, [0, 0])
+            out[ref] = [max(prev[0], count), max(prev[1], uniq)]
+    return out
+
+
+def events_in(store, repo, days):
+    """{'releases': [(day, tag)], 'pushes': {day: commits}} inside `days`."""
+    section = ((store or {}).get("events") or {}).get(repo) or {}
+    seen = set(days)
+    releases = sorted((day, tag) for tag, day in (section.get("releases") or {}).items()
+                      if day in seen)
+    pushes = {day: n for day, n in (section.get("pushes") or {}).items() if day in seen}
+    return {"releases": releases, "pushes": pushes}
+
+
+# ---- statistics --------------------------------------------------------------
+
+def median(values):
+    s = sorted(values)
+    n = len(s)
+    if not n:
+        return 0.0
+    if n % 2:
+        return float(s[n // 2])
+    return (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
+def modified_z(values):
+    """Modified z-score per element, robust to a series of mostly zeros.
+
+    The textbook form is 0.6745 * (x - median) / MAD. On this data the
+    MAD is frequently zero — a repo sits at zero clones for twelve days
+    and then takes 541 — and dividing by it yields 0.0 for every day,
+    scoring the largest events in the account as perfectly ordinary. The
+    mean-absolute-deviation fallback (x - median) / (1.253314 * meanAD)
+    is the standard remedy, and it is the difference between a heatmap
+    that shows the release waves and one that shows nothing at all.
+    """
+    n = len(values)
+    if n < 2:
+        return [0.0] * n
+    med = median(values)
+    deviations = [abs(v - med) for v in values]
+    mad = median(deviations)
+    if mad > 0:
+        return [0.6745 * (v - med) / mad for v in values]
+    mean_ad = sum(deviations) / n
+    if mean_ad > 0:
+        return [(v - med) / (1.253314 * mean_ad) for v in values]
+    return [0.0] * n
+
+
+def pearson(xs, ys):
+    """Pearson r; 0.0 when either series is constant (r is undefined then)."""
+    n = min(len(xs), len(ys))
+    if n < 2:
+        return 0.0
+    mx = sum(xs[:n]) / n
+    my = sum(ys[:n]) / n
+    sxy = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+    sxx = sum((xs[i] - mx) ** 2 for i in range(n))
+    syy = sum((ys[i] - my) ** 2 for i in range(n))
+    if sxx <= 0 or syy <= 0:
+        return 0.0
+    return sxy / math.sqrt(sxx * syy)
+
+
+def _clamp01(x):
+    return max(0.0, min(1.0, x))
+
+
+def _band(value, bands):
+    for threshold, label in bands:
+        if value >= threshold:
+            return label
+    return bands[-1][1]
+
+
+# ---- B. windowed deltas and rates --------------------------------------------
+
+def deltas(store, timeframe, end=None):
+    """Per-repo windowed change, from the daily store.
+
+        cur  = sum(daily, current N days)
+        prev = sum(daily, previous N days)
+        d    = cur - prev
+        rate = cur / N   (per day)
+
+    `comparable` is False when the store does not reach back a full second
+    window; the delta is then not a change and must not be drawn as one.
+    A negative clone delta is now only ever a genuine decline, which is
+    the whole point of abandoning the snapshot diff.
+    """
+    days = window(store, timeframe, end)
+    prev_days = previous_window(store, timeframe, end)
+    comparable = bool(prev_days)
+    n = max(1, len(days))
+    out = {}
+    for repo in repo_names(store):
+        row = {"repo": repo, "days": days, "comparable": comparable, "window_len": n}
+        touched = False
+        for metric in METRICS:
+            cur = total(store, repo, metric, days)
+            prev = total(store, repo, metric, prev_days) if comparable else 0
+            row[metric] = {
+                "cur": cur,
+                "prev": prev if comparable else None,
+                "delta": (cur - prev) if comparable else None,
+                "rate": cur / n,
+                "uniq": total(store, repo, metric, days, UNIQ),
+                "series": series(store, repo, metric, days),
+            }
+            touched = touched or cur or prev
+        if touched:
+            out[repo] = row
+    return out
+
+
+# ---- A. audience: human vs fetcher -------------------------------------------
+
+def _human_ratio(ratio):
+    """Clones per unique visitor, log-scaled into a 0..1 human-ness score."""
+    if ratio <= 0:
+        return 1.0
+    lo, hi = math.log10(RATIO_HUMAN), math.log10(RATIO_CRAWLER)
+    return _clamp01(1.0 - (math.log10(ratio) - lo) / (hi - lo))
+
+
+def _human_depth(views, uniq_visitors):
+    """Views per unique visitor, scored as a band rather than a slope.
+
+    "Bots don't browse" is true, but so is its mirror image, and the
+    mirror image is what live data shows: a fetcher fleet with two unique
+    visitors and 150 page views scores an enormous views-per-visitor
+    while doing no browsing whatsoever. A person reads a few pages per
+    visit. Both tails are inhuman, so the score peaks inside the band and
+    falls away on either side, and it is withheld entirely below
+    DEPTH_MIN_VISITORS, where the denominator is one client rather than a
+    population.
+    """
+    if uniq_visitors < DEPTH_MIN_VISITORS:
+        return None
+    depth = views / uniq_visitors
+    lo, hi = DEPTH_BAND
+    if lo <= depth <= hi:
+        return 1.0
+    if depth < lo:
+        return _clamp01(depth / lo)
+    return _clamp01(hi / depth)
+
+
+def audience(store, timeframe, end=None, weights=None):
+    """Per-repo audience components and composite classification.
+
+        ratio     = uniq_cloners / max(uniq_visitors, 1)   [primary]
+        burst     = max_day_clones / window_clones
+        depth     = views / uniq_visitors
+        referrers = distinct referrers observed in the window
+
+    Each maps to a 0..1 "human-ness" score; the composite is their
+    weighted mean over whichever components are available. Classification
+    labels the row and nothing else — the store is never filtered by it,
+    because a crawler wave is itself a signal that something published.
+    """
+    weights = weights or AUDIENCE_WEIGHTS
+    days = window(store, timeframe, end)
+    long_enough = len(days) >= BURST_MIN_DAYS
+    out = {}
+    for repo in active_repos(store, days):
+        clone_days = series(store, repo, "clones", days)
+        clones = sum(clone_days)
+        uniq_cloners = total(store, repo, "clones", days, UNIQ)
+        views = total(store, repo, "views", days)
+        uniq_visitors = total(store, repo, "views", days, UNIQ)
+
+        ratio = uniq_cloners / max(uniq_visitors, 1)
+        burst = (max(clone_days) / clones) if (clones and long_enough) else None
+        refs = referrers_in(store, repo, days)
+        diversity = len(refs) if refs is not None else None
+
+        scores = {
+            "ratio": _human_ratio(ratio),
+            "burst": (1.0 - burst) if burst is not None else None,
+            "depth": _human_depth(views, uniq_visitors),
+            "referrers": (_clamp01(diversity / REFERRER_FULL)
+                          if diversity is not None else None),
+        }
+        present = {k: v for k, v in scores.items() if v is not None}
+        wsum = sum(weights.get(k, 0.0) for k in present)
+        composite = (sum(v * weights.get(k, 0.0) for k, v in present.items()) / wsum
+                     if wsum > 0 else 0.0)
+
+        signal = uniq_cloners + uniq_visitors
+        out[repo] = {
+            "repo": repo,
+            "ratio": ratio,
+            "burst": burst,
+            "depth": (views / uniq_visitors) if uniq_visitors else None,
+            "referrer_diversity": diversity,
+            "scores": scores,
+            "missing": sorted(k for k, v in scores.items() if v is None),
+            "score": composite,
+            "signal": signal,
+            "label": ("low-signal" if signal < AUDIENCE_MIN_SIGNAL
+                      else _band(composite, AUDIENCE_BANDS)),
+            "clones": clones,
+            "uniq_cloners": uniq_cloners,
+            "views": views,
+            "uniq_visitors": uniq_visitors,
+        }
+    return out
+
+
+# ---- D. clone intent ---------------------------------------------------------
+
+def intent(store, timeframe, end=None, audience_rows=None):
+    """Laplace-smoothed clone intent, on uniques.
+
+        score = (uniq_cloners + 1) / (uniq_visitors + 2)
+
+    Smoothing is what stops a repo with seven clones from tying one with
+    541: with no prior, both are "1.00" and the ranking at the top of the
+    list is noise. There is no cap — the previous 0-200 scale truncated
+    exactly where the signal lives, so every fetcher fleet landed on
+    200.0 and the ordering above it was lost.
+
+    `conflict` marks a repo whose intent reads developer while the
+    audience view classifies it as a crawler: the same clone count, read
+    two ways, disagreeing. That is a flag, not a celebration.
+    """
+    days = window(store, timeframe, end)
+    aud = audience_rows if audience_rows is not None else audience(store, timeframe, end)
+    out = {}
+    for repo in active_repos(store, days):
+        uniq_cloners = total(store, repo, "clones", days, UNIQ)
+        uniq_visitors = total(store, repo, "views", days, UNIQ)
+        signal = uniq_cloners + uniq_visitors
+        score = (uniq_cloners + 1) / (uniq_visitors + 2)
+        label = "low-signal" if signal < INTENT_LOW_SIGNAL else _band(score, INTENT_BANDS)
+        a = aud.get(repo) or {}
+        out[repo] = {
+            "repo": repo,
+            "score": score,
+            "raw_ratio": uniq_cloners / max(uniq_visitors, 1),
+            "uniq_cloners": uniq_cloners,
+            "uniq_visitors": uniq_visitors,
+            "signal": signal,
+            "label": label,
+            "audience_label": a.get("label"),
+            "conflict": label == "developer" and a.get("label") == "crawler",
+        }
+    return out
+
+
+# ---- C. anomalies as a repo x day grid ---------------------------------------
+
+def anomalies(store, timeframe, end=None, repos=None):
+    """Modified-z per repo per day, shaped for a strip heatmap.
+
+    Returns {'days', 'rows', 'campaigns'} where rows is
+    [(repo, [{'z','metric','dir'} | None, ...])] aligned to days, and
+    campaigns maps a day to the repos that spiked together on it.
+
+    Collapsing simultaneous spikes matters because the operator's own
+    launches are the dominant anomaly source on a personal account: one
+    release afternoon produces forty rows in a flat table and reads as
+    forty independent events, when it is one event with forty
+    consequences.
+    """
+    days = window(store, timeframe, end)
+    names = repos if repos is not None else active_repos(store, days)
+    rows, campaigns = [], defaultdict(list)
+    for repo in names:
+        cells = [None] * len(days)
+        for metric in METRICS:
+            values = series(store, repo, metric, days)
+            med = median(values)
+            for i, z in enumerate(modified_z(values)):
+                if abs(z) < Z_MINOR:
+                    continue
+                cell = {"z": z, "metric": metric,
+                        "dir": "spike" if z > 0 else "dip",
+                        "value": values[i], "median": med,
+                        "material": abs(values[i] - med) >= Z_MIN_VALUE}
+                cur = cells[i]
+                # Materiality outranks magnitude. A view count going 1 -> 2
+                # scores the same |z| as clones going 0 -> 80 on a series
+                # with the same shape, and picking by |z| alone would label
+                # the day with the trivial metric and hide the real one.
+                if cur is None or (cell["material"], abs(z)) > (cur["material"], abs(cur["z"])):
+                    cells[i] = cell
+        rows.append((repo, cells))
+        for i, cell in enumerate(cells):
+            if (cell and cell["material"] and cell["dir"] == "spike"
+                    and abs(cell["z"]) >= Z_SIGNIFICANT):
+                campaigns[days[i]].append(repo)
+    campaigns = {day: sorted(repos_) for day, repos_ in campaigns.items()
+                 if len(repos_) >= CAMPAIGN_MIN_REPOS}
+    return {"days": days, "rows": rows, "campaigns": campaigns}
+
+
+def severity(z):
+    a = abs(z)
+    if a >= Z_EXTREME:
+        return "extreme"
+    if a >= Z_SIGNIFICANT:
+        return "significant"
+    if a >= Z_MINOR:
+        return "minor"
+    return None
+
+
+# ---- E. coupled repos --------------------------------------------------------
+
+def coupled(store, timeframe, end=None, metric="clones", limit=None):
+    """Pearson r on residuals, after removing account-wide co-movement.
+
+    A raw correlation over a fortnight of this account is dominated by
+    one thing: release days, when everything moves at once. Those 0.99
+    pairs are the launch wave correlating with itself, and no action
+    follows from them. Subtracting each repo's expected share of the
+    account's daily total leaves what is left after the wave — pairs that
+    are fetched together for reasons of their own, which is the input to
+    cross-linking a catalog.
+
+    `lag_available` stays False below LAG_MIN_DAYS aligned days: a lead
+    of one day measured over fourteen is a coin toss with a decimal point.
+    """
+    days = window(store, timeframe, end)
+    if len(days) < COUPLE_MIN_DAYS:
+        return {"days": days, "pairs": [], "lag_available": False,
+                "reason": f"needs >= {COUPLE_MIN_DAYS} aligned days, have {len(days)}"}
+
+    names = [r for r in active_repos(store, days)
+             if total(store, r, metric, days) >= COUPLE_MIN_CLONES]
+    account = account_series(store, metric, days)
+    account_total = sum(account) or 1
+
+    residuals = {}
+    for repo in names:
+        values = series(store, repo, metric, days)
+        share = sum(values) / account_total
+        residuals[repo] = [values[i] - share * account[i] for i in range(len(days))]
+
+    pairs = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            r = pearson(residuals[a], residuals[b])
+            if r == 0.0:
+                continue
+            pairs.append({"a": a, "b": b, "r": r, "n": len(days),
+                          "raw_r": pearson(series(store, a, metric, days),
+                                           series(store, b, metric, days))})
+    pairs.sort(key=lambda p: -abs(p["r"]))
+    if limit:
+        pairs = pairs[:limit]
+    return {"days": days, "pairs": pairs,
+            "lag_available": len(days) >= LAG_MIN_DAYS, "reason": ""}
+
+
+def coupled_for(store, timeframe, repo, end=None, top=4):
+    """The repos most coupled to one repo — the drilldown's adjacency list."""
+    result = coupled(store, timeframe, end)
+    out = []
+    for pair in result["pairs"]:
+        if pair["a"] == repo:
+            out.append({"repo": pair["b"], "r": pair["r"], "n": pair["n"]})
+        elif pair["b"] == repo:
+            out.append({"repo": pair["a"], "r": pair["r"], "n": pair["n"]})
+    return out[:top]
+
+
+# ---- F. funnel depth ---------------------------------------------------------
+
+DEPTH_CATEGORIES = ("doc_blob", "code_blob", "src_blob", "dir_tree")
+FRONT_DOOR = "overview"
+
+
+def funnel_depth(funnel_rows):
+    """Per-repo category mix and how far past the front door traffic got.
+
+        depth_ratio = (doc_blob + code_blob + src_blob + dir_tree)
+                      / max(overview, 1)
+
+    One number for "did anyone read anything, or did they bounce off the
+    README". Path data is per-run and inherently a rolling 14-day
+    snapshot — GitHub exposes no dated path history — so unlike every
+    other function here this one reads the run's CSV and does not respond
+    to the timeframe selector. The views that show it say so.
+    """
+    by_repo = defaultdict(lambda: defaultdict(int))
+    for row in funnel_rows:
+        repo = row.get("repo_name", "")
+        cat = row.get("category", "") or "other"
+        if not repo:
+            continue
+        try:
+            views = int(row.get("view_count") or 0)
+        except (TypeError, ValueError):
+            views = 0
+        by_repo[repo][cat] += views
+    out = {}
+    for repo, cats in by_repo.items():
+        deep = sum(cats.get(c, 0) for c in DEPTH_CATEGORIES)
+        front = cats.get(FRONT_DOOR, 0)
+        total_views = sum(cats.values())
+        out[repo] = {
+            "repo": repo,
+            "categories": dict(cats),
+            "deep": deep,
+            "front": front,
+            "total": total_views,
+            "depth_ratio": deep / max(front, 1),
+        }
+    return out
+
+
+# ---- the [?] overlay ---------------------------------------------------------
+
+DERIVATIONS = {
+    "audience": [
+        "AUDIENCE — is this repo's traffic people or fetchers?",
+        "",
+        "  ratio     = uniq_cloners / max(uniq_visitors, 1)      [primary]",
+        "  burst     = max_day_clones / window_clones",
+        "  depth     = views / uniq_visitors",
+        "  referrers = distinct referrers observed in the window",
+        "",
+        f"  ratio <= {RATIO_HUMAN} scores 1.0 (audience), >= {RATIO_CRAWLER} scores 0.0",
+        "  (crawler); log-scaled between. burst scores 1-burst: crawlers land",
+        f"  on push day, people spread out. depth peaks inside {DEPTH_BAND[0]}-{DEPTH_BAND[1]}",
+        "  views/visitor and falls away on BOTH sides — 150 views from 2 unique",
+        "  visitors is one client hammering, not deep reading. referrers score",
+        f"  distinct/{REFERRER_FULL}.",
+        "",
+        "  score = weighted mean over available components",
+        f"  weights: {', '.join(f'{k} {v}' for k, v in AUDIENCE_WEIGHTS.items())}",
+        f"  label:  >= {AUDIENCE_BANDS[0][0]} audience, >= {AUDIENCE_BANDS[1][0]} mixed, else crawler",
+        "",
+        f"  low-signal when uniq_cloners + uniq_visitors < {AUDIENCE_MIN_SIGNAL}. Read it",
+        "  as 'not enough evidence', not as a middling result: five unique",
+        "  cloners and two unique visitors is four data points, and calling",
+        "  that 'mixed' reports a finding where there is only an absence of",
+        "  one. MIXED means the components genuinely disagree — some human",
+        "  signal, some fetcher signal, on a repo with enough traffic to say.",
+        "",
+        f"  burst is withheld below {BURST_MIN_DAYS} days in the window, depth below",
+        f"  {DEPTH_MIN_VISITORS} unique visitors, referrers when the store has no referrer",
+        "  history. Withheld components are dropped and the weights renormalized —",
+        "  never scored zero. Missing components are listed per row.",
+        "",
+        "  inputs: durable daily store, UNIQUES (field 1) except depth's",
+        "  numerator and burst, which are raw counts.",
+        "  Classification labels the row; it never filters the store.",
+    ],
+    "deltas": [
+        "DELTAS — what changed, over the selected timeframe",
+        "",
+        "  cur  = sum(daily, current N days)",
+        "  prev = sum(daily, previous N days)",
+        "  d    = cur - prev",
+        "  rate = cur / N        (per day)",
+        "",
+        "  N comes from the t/T timeframe selector. Both windows are read from",
+        "  the durable daily store, never from GitHub's rolling 14-day totals:",
+        "  those lose their left edge daily, so differencing two snapshots of",
+        "  them mixes 'what happened' with 'what aged out' and manufactures",
+        "  negative deltas for repos where nothing happened at all.",
+        "",
+        "  A row shows 'n/a' instead of a delta when the store does not yet",
+        "  reach back a second full window. A negative delta here is a real",
+        "  decline.",
+        "",
+        "  inputs: durable daily store, raw counts (uniques shown alongside).",
+    ],
+    "anomaly": [
+        "ANOMALIES — which repo, which day, how far from its own normal",
+        "",
+        "  z = 0.6745 * (x - median) / MAD                    [when MAD > 0]",
+        "  z = (x - median) / (1.253314 * meanAD)             [when MAD = 0]",
+        "",
+        f"  |z| >= {Z_EXTREME} extreme, >= {Z_SIGNIFICANT} significant, >= {Z_MINOR} minor.",
+        "  Cell intensity is max |z| that day across clones and views; the glyph",
+        "  says which metric drove it (c clones, v views, lowercase = dip).",
+        "",
+        "  The meanAD fallback is load-bearing: a repo that sits at zero for",
+        "  twelve days and then takes 541 clones has a MAD of zero, and the",
+        "  textbook formula scores its spike 0.00 — the largest events in the",
+        "  account, reported as perfectly ordinary.",
+        "",
+        f"  MATERIALITY: a cell is an event only if it moves >= {Z_MIN_VALUE} from the",
+        "  repo's median. Most repos sit at zero for a fortnight, so one clone is",
+        "  statistically enormous for them; with no floor about thirty repos",
+        "  qualify on an ordinary Tuesday. Immaterial cells still render, dimmed,",
+        "  but never join a campaign.",
+        "",
+        f"  CAMPAIGNS: {CAMPAIGN_MIN_REPOS}+ repos spiking on one day fold into a single",
+        "  account-event row and their cells dim. Your own launches are the",
+        "  dominant anomaly source; 40 rows for one release afternoon reads as",
+        "  40 independent events, which is the wrong number by 39.",
+        "",
+        "  inputs: durable daily store, raw counts, over the selected window.",
+    ],
+    "profile": [
+        "CLONE INTENT — how many of the people who looked, cloned?",
+        "",
+        "  score = (uniq_cloners + 1) / (uniq_visitors + 2)     [Laplace]",
+        "",
+        "  Read it as smoothed clones per unique visitor. It is a RATE, not a",
+        "  share: a repo cloned more often than it is browsed scores above 1,",
+        "  and nothing caps it.",
+        "",
+        f"  >= {INTENT_BANDS[0][0]} developer, >= {INTENT_BANDS[1][0]} tooling, else reference.",
+        f"  low-signal when uniq_cloners + uniq_visitors < {INTENT_LOW_SIGNAL}.",
+        "",
+        "  Uniques, not raw counts: raw clones include one crawler's repetition,",
+        "  which is how a fetcher fleet used to top this list. Smoothing is why a",
+        "  7-clone repo can no longer tie a 541-clone one — unsmoothed, both are",
+        "  1.00 and the ranking at the top is noise. There is no cap; the old",
+        "  0-200 scale truncated exactly where the ordering mattered.",
+        "",
+        "  A row marked CONFLICT scores developer here while the audience view",
+        "  classifies it a crawler. Same clones, two readings, disagreeing.",
+        "",
+        "  inputs: durable daily store, UNIQUES, over the selected window.",
+    ],
+    "correlation": [
+        "COUPLED REPOS — fetched together for reasons of their own",
+        "",
+        "  share_r    = sum(r, window) / sum(account, window)",
+        "  residual_r = daily_r - share_r * account_daily",
+        "  r          = Pearson(residual_a, residual_b)",
+        "",
+        "  Raw Pearson over a fortnight of one account is dominated by release",
+        "  days, when everything moves at once: those 0.99 pairs are the launch",
+        "  wave correlating with itself, and nothing follows from them.",
+        "  Removing each repo's expected share of the day's account total",
+        "  leaves co-movement that is not the wave.",
+        "",
+        f"  Needs >= {COUPLE_MIN_DAYS} aligned days. Lag is suppressed below {LAG_MIN_DAYS} days:",
+        "  a one-day lead measured over fourteen is a coin toss with a decimal",
+        f"  point. Pairs below {COUPLE_MIN_CLONES} window clones are skipped as noise.",
+        "",
+        "  inputs: durable daily store, raw clone counts, over the window.",
+    ],
+    "funnel": [
+        "FUNNEL — what people actually opened, and how deep they got",
+        "",
+        "  depth_ratio = (doc_blob + code_blob + src_blob + dir_tree)",
+        "                / max(overview, 1)",
+        "",
+        "  'Got past the front door': above 1.0, more traffic reads content than",
+        "  bounces off the landing page. The heatmap is row-normalized, so each",
+        "  repo's MIX is comparable even when its volume is not.",
+        "",
+        "  TIMEFRAME DOES NOT APPLY. GitHub's popular-paths endpoint is a rolling",
+        "  14-day snapshot with no dated history to store, so this view always",
+        "  shows the newest run's window whatever t/T says. It is the one view",
+        "  that cannot honour the selector, and this is why.",
+        "",
+        "  inputs: the run's github_traffic_funnel CSV, raw view counts.",
+    ],
+    "table": [
+        "REPO TABLE — every repo, sortable by any derived column",
+        "",
+        "  momentum = clones delta over the selected window        [deltas]",
+        "  audience = composite human-ness score, 0..1             [audience]",
+        "  depth    = deep views / overview views                  [funnel]",
+        "  stars/uv = stars / max(uniq_visitors in window, 1)",
+        "",
+        "  Momentum and audience come from the durable daily store and follow",
+        "  t/T. Depth comes from the run's path CSV and does not (see the funnel",
+        "  derivation). stars/uv is a stock over a flow — a rough 'how much",
+        "  reputation per person who showed up', not a rate.",
+        "",
+        "  This view replaced the old 'top repos by criteria' screen, whose",
+        "  criteria (age, stars) answered questions nobody was asking.",
+    ],
+    "traffic": [
+        "TRAFFIC — daily clones and views, account-wide",
+        "",
+        "  Bars are daily totals from the durable daily store, summed across",
+        "  every repo. The window follows t/T; at 'epoch' the whole store is",
+        "  drawn and the stars-per-month chart appears beneath it.",
+        "",
+        "  Top lists are windowed sums over the same days, so a repo cannot",
+        "  appear in a list under a window it did not earn.",
+        "",
+        "  uniques ~= distinct visitors. GitHub's API cannot exclude the repo",
+        "  owner, so raw counts include your own traffic; uniques mostly do not.",
+        "",
+        "  inputs: durable daily store. GitHub's rolling totals are used only",
+        "  for the all-time figures on the stats line, which is all they can",
+        "  honestly support.",
+    ],
+    "drilldown": [
+        "REPO DRILLDOWN — one repo, every derived series",
+        "",
+        "  Chart 1  daily views and clones, raw counts, from the daily store.",
+        "           A ^ above a bar marks |z| >= 2 (see the anomaly derivation).",
+        "           A | rule under the axis marks a release or a push that day,",
+        "           from the store's event log — so a spike is drawn next to",
+        "           its cause instead of merely near it.",
+        "  Chart 2  uniques: unique cloners and unique visitors per day, with",
+        "           the audience ratio (uniq_cloners / uniq_visitors) beneath.",
+        "  Funnel   this repo's category mix and depth_ratio, from the run CSV",
+        "           (rolling 14 days, does not follow t/T).",
+        "  Coupled  residualized Pearson against every other active repo.",
+        "  Activity PRs opened/merged, releases, and commit-days in the window.",
+    ],
+}
+
+
+def derivation(view):
+    """The [?] overlay text for a view; a short honest note when absent."""
+    return DERIVATIONS.get(view) or [
+        f"{view.upper()} — no derivation registered.",
+        "",
+        "This view shows collected data directly rather than a derived score.",
+        "If it does compute something, that is a defect: a number the operator",
+        "cannot explain from inside the TUI is exactly what this overlay exists",
+        "to prevent.",
+    ]

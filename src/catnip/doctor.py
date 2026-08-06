@@ -32,7 +32,8 @@ PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 # the sole other symptom is a silently empty panel three days later.
 TUI_CSVS = [
     "github_repos.csv", "github_stats_by_repo.csv", "github_languages.csv",
-    "github_code_frequency.csv", "github_pull_requests.csv", "github_releases.csv",
+    "github_code_frequency.csv", "github_commit_daily.csv",
+    "github_pull_requests.csv", "github_releases.csv",
     "github_lang_distribution.csv", "github_top_repos.csv",
     "github_traffic_timeseries.csv", "github_traffic_paths.csv",
     "github_traffic_referrers.csv", "github_release_assets.csv",

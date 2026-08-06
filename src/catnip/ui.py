@@ -12,6 +12,14 @@ Everything that knows what a repository is lives here; everything that
 knows what a terminal is lives in catnip.tui (vendored from pane). That
 split is why the drawing layer can be re-vendored without touching a
 single view.
+
+A third layer sits between them: `catnip.derive` holds every windowed
+computation, reading only the durable daily store. This module draws;
+it does not decide what a number means. The practical test is that any
+score on screen can be explained by the `[?]` overlay, whose text lives
+next to the formula that produces it — a view whose numbers cannot be
+explained from inside the TUI is a defect, and `derive.DERIVATIONS` is
+where that stops being true.
 """
 import argparse
 import json
@@ -21,6 +29,7 @@ from contextlib import suppress
 from datetime import date, timedelta
 from pathlib import Path
 
+from catnip import derive
 from catnip.tui.charts import bar_chart
 from catnip.tui.fmt import (
     compact_num as _compact_num,
@@ -42,19 +51,44 @@ from catnip.tui.framework import (
     curses_main,
     read_csv,
 )
+from catnip.tui.grids import heatmap, ramp_glyph, scrollbar
+from catnip.tui.interact import RowCursor
 
-VIEWS = ('traffic', 'top', 'table', 'lang', 'freq', 'deltas', 'anomaly',
-         'profile', 'correlation', 'funnel', 'history')
-# Digits jump straight to views (plan 08 phase 6); timeframes moved to t/T.
-# PR activity was folded into the deltas view (plan 13) — no standalone 'pr'.
-VIEW_KEYS = '1234567890-='
-TIMEFRAMES = ('1d', '1w', '2w', 'all')
+# Slot 2 was 'top' — repos ranked by age and stars, criteria that answered
+# nothing the table did not answer better; its useful remnants are now
+# sortable columns there. 'history' was slot '-' and duplicated 'traffic'
+# with a longer window, so it became the 'epoch' stop on the timeframe
+# cycle instead. Every other view kept its digit: muscle memory is a real
+# cost and renumbering ten views to add one is not worth paying it.
+VIEWS = ('traffic', 'audience', 'table', 'lang', 'freq', 'deltas', 'anomaly',
+         'profile', 'correlation', 'funnel')
+VIEW_KEYS = '1234567890'
 
-# Trailing days per timeframe. GitHub's traffic API exposes ~14 daily
-# buckets; 'all' reads the history store's account-wide series (weeks/months once
-# ingested).
-DAY_WINDOW = {'1d': 1, '1w': 7, '2w': 14, 'all': None}
-TF_LABEL = {'1d': 'last day', '1w': 'last 7d', '2w': 'last 14d', 'all': 'all history'}
+# Views whose rows are repos, and which therefore carry a cursor and open
+# the drilldown on [enter].
+# 'traffic' is here for its two top lists, which are the only repo names on
+# the landing screen; [tab] chooses which list the cursor is in.
+REPO_ROW_VIEWS = ('traffic', 'audience', 'table', 'deltas', 'anomaly', 'profile',
+                  'funnel')
+
+TIMEFRAMES = ('1d', '1w', '2w', 'all', 'epoch')
+
+#: Repo scope, cycled with `o`. 'owned' leads: it is what the operator
+#: means by "my repos" nearly every time they open this.
+SCOPES = ('owned', 'all', 'forks')
+
+# Trailing days per timeframe, owned by derive so the windows the views
+# label and the windows the maths uses cannot drift apart.
+DAY_WINDOW = derive.WINDOW_DAYS
+# Glyphs used inside f-strings. Python 3.10 rejects a backslash escape in
+# an f-string expression and 3.10 is this project's floor, so they are
+# named here rather than written inline.
+DELTA, UP_MARK, EM_DASH, ELLIPSIS = '\u0394', '\u25b2', '\u2014', '\u2026'
+UP_ARROW, DOWN_ARROW = '\u2191', '\u2193'
+BLOCK = '\u2588'
+
+TF_LABEL = {'1d': 'last day', '1w': 'last 7d', '2w': 'last 14d',
+            'all': 'all history', 'epoch': 'store epoch'}
 
 
 class AnalyticsData:
@@ -65,21 +99,39 @@ class AnalyticsData:
     in (the CLI resolves them from config) and fall back to the layout
     catnip writes — <data>/runs/<id> next to <data>/stats — so pointing
     the viewer at a run directory copied somewhere else still works.
+
+    `fetch_dir` may be None. Runs are pruned; the store is not, so after
+    retention has swept every run the durable daily store is still a
+    complete answer for the views derived from it. Store-only mode loads
+    those and leaves the per-run CSVs empty rather than refusing to open —
+    the alternative is a viewer that goes dark on exactly the data catnip
+    works hardest to keep.
     """
 
-    def __init__(self, fetch_dir, stats_file=None, history_file=None):
-        self.fetch_dir = Path(fetch_dir).resolve()
-        data_dir = self.fetch_dir.parent.parent
-        self.stats_file = Path(stats_file) if stats_file else data_dir / 'stats' / 'totals.json'
-        self.history_file = (Path(history_file) if history_file
-                             else data_dir / 'stats' / 'history' / 'traffic_daily.json')
-        self.analysis_dir = self.fetch_dir / 'analysis'
+    def __init__(self, fetch_dir=None, stats_file=None, history_file=None):
+        self.fetch_dir = Path(fetch_dir).resolve() if fetch_dir else None
+        data_dir = self.fetch_dir.parent.parent if self.fetch_dir else None
+        if stats_file:
+            self.stats_file = Path(stats_file)
+        else:
+            self.stats_file = (data_dir / 'stats' / 'totals.json' if data_dir
+                               else Path('totals.json'))
+        if history_file:
+            self.history_file = Path(history_file)
+        else:
+            self.history_file = (data_dir / 'stats' / 'history' / 'traffic_daily.json'
+                                 if data_dir else Path('traffic_daily.json'))
+        self.analysis_dir = self.fetch_dir / 'analysis' if self.fetch_dir else None
+        self.store_only = self.fetch_dir is None
         self.reload()
 
     def _read_csv(self, fname):
+        if self.analysis_dir is None:
+            return []
         return read_csv(self.analysis_dir / fname)
 
     def reload(self):
+        self._cache = {}
         self.repos = self._read_csv('github_repos.csv')
         self.stats = self._read_csv('github_stats_by_repo.csv')
         self.languages = self._read_csv('github_languages.csv')
@@ -137,6 +189,18 @@ class AnalyticsData:
             1 for r in self.repos
             if (r.get('status') or ('archived' if r.get('archived') == 'True' else 'active')) == 'active')
 
+        if self.store_only:
+            # No repos CSV to sum. The account-wide numbers are exactly what
+            # totals.json already holds, so read them rather than showing zeros
+            # under a header that claims to describe the whole account.
+            for key in self._totals:
+                if self.totals.get(key) is not None:
+                    self._totals[key] = self.totals[key]
+            self._total_repos = (self.totals.get('total_repos')
+                                 or len(self.history.get('repos') or {}))
+            self._active_count = max(
+                0, self._total_repos - _int(self.totals, 'archived_repos'))
+
         self._build_traffic_series()
 
     def _build_traffic_series(self):
@@ -172,8 +236,11 @@ class AnalyticsData:
                 for name in list(store):
                     store[name] = [b for b in store[name] if b[0] <= last_active]
 
-        self.daily_views = self._org_series(self._repo_view_buckets)
-        self.daily_clones = self._org_series(self._repo_clone_buckets)
+        # Same rule as _windowed_metric: the store is the source of truth for
+        # daily series whenever it exists, so the charts and the top lists
+        # cannot disagree about what a day contained.
+        self.daily_views = self.history_series('views') or self._org_series(self._repo_view_buckets)
+        self.daily_clones = self.history_series('clones') or self._org_series(self._repo_clone_buckets)
 
     @staticmethod
     def _org_series(repo_buckets):
@@ -207,9 +274,10 @@ class AnalyticsData:
                             if n is None or ts[:10] >= cutoff)
         return out
 
-    def _repo_history_buckets(self, metric):
+    def _repo_history_buckets(self, metric, field=0):
         """Per-repo daily buckets from the history store (survives fetch-dir
-        pruning); {} when no store exists."""
+        pruning); {} when no store exists. field selects the stored pair —
+        0 = raw count, 1 = uniques."""
         out = {}
         for repo, metrics in (self.history.get('repos') or {}).items():
             if not repo:
@@ -217,18 +285,21 @@ class AnalyticsData:
             days = (metrics.get(metric) or {})
             if days:
                 out[repo] = sorted(
-                    (d, v[0] if isinstance(v, list) and v else 0)
+                    (d, v[field] if isinstance(v, list) and len(v) > field else 0)
                     for d, v in days.items())
         return out
 
     def _windowed_metric(self, metric, csv_buckets, timeframe):
+        """Windowed per-repo totals, read from the durable store by preference.
+
+        The run CSVs hold GitHub's rolling window, which loses its left edge
+        every day; the store is append-only and max-merged. Reading the store
+        for *every* timeframe (not just 'all') is what makes a window mean the
+        same thing on day 1 and day 60. The CSVs remain the fallback for a run
+        that has not been ingested yet.
+        """
         n = DAY_WINDOW.get(timeframe, 14)
-        if n is None:
-            # 'all' must read the same source the chart does, or the top lists
-            # silently report the fetch's ~14-day window under an "all history"
-            # heading.
-            return self._windowed(self._repo_history_buckets(metric) or csv_buckets, None)
-        return self._windowed(csv_buckets, n)
+        return self._windowed(self._repo_history_buckets(metric) or csv_buckets, n)
 
     def windowed_views(self, timeframe):
         """{repo: views} summed over the trailing window for this timeframe."""
@@ -245,6 +316,71 @@ class AnalyticsData:
         return [{'ts': d, 'label': _short_date(d), 'count': c}
                 for d, c in sorted(days.items())]
 
+    # ---- derived metrics -----------------------------------------------
+    #
+    # Every one of these reads the durable store through catnip.derive and
+    # is memoized per (kind, timeframe). render() runs on every keypress,
+    # and the residualized pair scan is O(active repos squared) — without a
+    # cache, holding `j` down would recompute it forty times a second.
+    # `reload()` drops the cache, so `r` still picks up new data.
+
+    def _derived(self, kind, timeframe, fn):
+        key = (kind, timeframe)
+        if key not in self._cache:
+            self._cache[key] = fn()
+        return self._cache[key]
+
+    def window_days(self, timeframe):
+        return self._derived('window', timeframe,
+                             lambda: derive.window(self.history, timeframe))
+
+    def deltas(self, timeframe):
+        return self._derived('deltas', timeframe,
+                             lambda: derive.deltas(self.history, timeframe))
+
+    def audience(self, timeframe):
+        return self._derived('audience', timeframe,
+                             lambda: derive.audience(self.history, timeframe))
+
+    def intent(self, timeframe):
+        return self._derived(
+            'intent', timeframe,
+            lambda: derive.intent(self.history, timeframe,
+                                  audience_rows=self.audience(timeframe)))
+
+    def anomalies(self, timeframe):
+        return self._derived('anomalies', timeframe,
+                             lambda: derive.anomalies(self.history, timeframe))
+
+    def coupled(self, timeframe):
+        return self._derived('coupled', timeframe,
+                             lambda: derive.coupled(self.history, timeframe))
+
+    def funnel_depth(self):
+        return self._derived('funnel_depth', '-',
+                             lambda: derive.funnel_depth(self.funnel_data))
+
+    def events(self, repo, days):
+        return derive.events_in(self.history, repo, days)
+
+    def forked_repos(self):
+        """Names GitHub reports as forks, from the newest run's repo CSV.
+
+        Empty when there is no run: a store on its own cannot know, and
+        guessing from names would be worse than saying so.
+        """
+        if 'forks' not in self._cache:
+            self._cache['forks'] = {r.get('repo_name', '') for r in self.repos
+                                    if r.get('is_fork') == 'True'}
+        return self._cache['forks']
+
+    def knows_forks(self):
+        """Whether fork status is available at all (a pre-is_fork run says no)."""
+        return bool(self.repos) and any('is_fork' in r for r in self.repos)
+
+    def has_store(self):
+        return bool((self.history or {}).get('repos'))
+
 
 class AnalyticsTUI(TuiApp):
     def __init__(self, stdscr, data, timeframe='2w', view='traffic'):
@@ -252,14 +388,58 @@ class AnalyticsTUI(TuiApp):
         self.data = data
         self.timeframe = timeframe if timeframe in TIMEFRAMES else '2w'
         self.view = view if view in VIEWS else 'traffic'
+        self.init_view_state()
+
+    def init_view_state(self):
+        """Per-view UI state, in one place.
+
+        Defined as a method because the offline layout tests build an app
+        without running __init__ (there is no terminal to attach to), and a
+        second copy of these defaults in the test harness drifts the moment
+        a view gains a mode — which it did, twice.
+        """
         self.search = ''
-        self.table_sort = 0       # 0=score, 1=clones, 2=views, 3=name
-        self.table_status = 0     # 0=all, 1=active, 2=stale, 3=archived
-        self.profile_sort = 0     # 0=score, 1=ratio, 2=name
-        self.profile_hide_low = False  # 'l' toggles the low-signal section
+        self.table_sort = 0       # index into TABLE_SORT_KEYS
+        self.table_status = 0     # index into the statuses actually present
+        self.profile_sort = 0     # index into PROFILE_SORT_KEYS
+        # Hidden by default on both classifying views. Two thirds of a
+        # personal account is repos with under ten unique cloners+visitors;
+        # showing them first buries the eleven repos that can actually be
+        # described under sixty that cannot.
+        self.profile_hide_low = True   # 'l' shows the unrankable repos
         self.anomaly_filter = 0   # 0=all, 1=extreme, 2=significant, 3=minor
         self.funnel_filter = 0    # index into funnel categories (0=all)
-        self.top_criterion = 0    # index into TOP_CRITERIA (plan 13: one per screen)
+        self.audience_sort = 0    # index into AUDIENCE_SORT_KEYS
+        self.traffic_pane = 0     # 0 = top views list, 1 = top clones
+        self.audience_hide_low = True   # 'l' shows the unclassifiable repos
+        # Sort direction per view. Every sorted view shows an arrow, because
+        # "sort: score" over a column whose smallest value is on top reads
+        # as a bug whatever the reason for it.
+        self.sort_flip = dict.fromkeys((*REPO_ROW_VIEWS, 'anomaly_events'), False)
+        self.deltas_hide_zero = True   # 'z' un-collapses the unchanged rows
+        # One cursor per view, so switching away and back lands on the row
+        # you were reading rather than at the top of the list.
+        self.cursors = {v: RowCursor() for v in REPO_ROW_VIEWS}
+        # The account-event list is a second cursor on the anomaly screen:
+        # its rows are days, not repos, so it cannot share one.
+        self.cursors['anomaly_events'] = RowCursor()
+        self.anomaly_pane = 1     # 0 = account events, 1 = the repo x day grid
+        self.event_sort = 0       # index into EVENT_SORT_KEYS
+        # First visible day in the grid, or None to pin to the newest. A
+        # 54-day window cannot show 54 labelled columns, and squeezing it
+        # to one character per day with a label every third column gives
+        # marks nobody can date.
+        self.anomaly_day_offset = None
+        self._anomaly_visible = 0
+        # Global repo scope. A fork's commits, languages and traffic belong
+        # to a project you did not write; mixing them into "your languages"
+        # or "most commits" answers a question nobody asked. Global rather
+        # than per-view because the answer is the same on every screen.
+        self.scope = 0            # index into SCOPES
+        self.drilldown = None     # repo name, or None for the account views
+        self.drilldown_event = None   # an account-event day, or None
+        self.overlay = False      # [?] derivation overlay
+        self.scroll = 0
 
     def init_extra_pairs(self):
         self.curses.init_pair(7, self.curses.COLOR_MAGENTA, -1)
@@ -288,8 +468,25 @@ class AnalyticsTUI(TuiApp):
             return ''
         return '█' * max(0, min(width, int(value / max_value * width)))
 
+    def scope_label(self):
+        return SCOPES[self.scope]
+
+    def in_scope(self, name):
+        """Whether a repo passes the global owned/all/forks filter.
+
+        Fork status comes from the newest run. With no run — or a run
+        predating the is_fork column — nothing is filtered, because
+        "we cannot tell" must not silently become "not a fork".
+        """
+        scope = SCOPES[self.scope]
+        if scope == 'all' or not self.data.knows_forks():
+            return True
+        forked = name in self.data.forked_repos()
+        return forked if scope == 'forks' else not forked
+
     def _filtered(self, rows, key='repo_name'):
-        """Apply the / search filter (substring on repo name)."""
+        """Apply the / search filter and the global repo scope."""
+        rows = [r for r in rows if self.in_scope(r.get(key, '') or '')]
         if not self.search:
             return rows
         needle = self.search.lower()
@@ -313,10 +510,184 @@ class AnalyticsTUI(TuiApp):
                 curses.curs_set(0)
         self.scroll = 0
 
+    # ---- cursor and drilldown ------------------------------------------
+
+    def _footer_sort(self):
+        """'column ↑/↓' for the footer, whichever view is up."""
+        if self.view == 'audience':
+            name, _k, natural = self.AUDIENCE_SORT_KEYS[self.audience_sort]
+        elif self.view == 'profile':
+            name, _k, natural = self.PROFILE_SORT_KEYS[self.profile_sort]
+        elif self.view == 'table':
+            name = self.TABLE_SORT_KEYS[self.table_sort][0]
+            natural = name != 'name'
+        else:
+            return ''
+        return f'{name}{self.sort_arrow(self._sort_desc(natural))}'
+
+    def sort_arrow(self, desc):
+        return DOWN_ARROW if desc else UP_ARROW
+
+    def _sort_desc(self, natural_desc):
+        """Whether to sort descending, after the view's [S] flip."""
+        return natural_desc != self.sort_flip.get(self.view, False)
+
+    def cursor(self, view=None):
+        """The RowCursor for a view; a scratch one for views without rows."""
+        return self.cursors.get(view or self.view) or RowCursor()
+
+    def _cursor_rows(self):
+        """Repo names for the current view, in the order it renders them.
+
+        This is the one place the cursor and the renderer have to agree.
+        Each view builds its row list through a helper that both this and
+        its `_render_*` call, so a sort or a filter can never leave [enter]
+        opening a different repo than the one under the highlight.
+        """
+        view = self.view
+        if view == 'traffic':
+            top_v, top_c = self._traffic_lists()
+            return [name for name, _v in (top_v if self.traffic_pane == 0 else top_c)]
+        if view == 'audience':
+            return [r['repo'] for r in self._audience_rows()]
+        if view == 'table':
+            return [r.get('repo_name', '') for r in self._table_rows()]
+        if view == 'deltas':
+            return [r['repo'] for r in self._delta_rows()]
+        if view == 'anomaly':
+            return [name for name, _cells in self._anomaly_rows()]
+        if view == 'profile':
+            return [r['repo'] for r in self._profile_rows()]
+        if view == 'funnel':
+            return [r['repo'] for r in self._funnel_repo_rows()]
+        return []
+
+    def _page(self, max_y=None):
+        """Rows of list body visible at the moment — the cursor's page size."""
+        if max_y is None:
+            max_y, _ = self.stdscr.getmaxyx()
+        return max(1, max_y - 9)
+
+    def selected_repo(self):
+        rows = self._cursor_rows()
+        if not rows:
+            return None
+        cur = self.cursor().clamp(len(rows), self._page())
+        return rows[cur.index]
+
     def handle_key(self, key):
         curses = self.curses
-        if key == 27 and self.search:
-            self.search = ''
+        # Escape unwinds one layer at a time: overlay, then drilldown, then
+        # the search filter. Quitting from three screens deep because the
+        # top layer swallowed the key is the way this kind of stack annoys
+        # people.
+        if key == 27:
+            if self.overlay:
+                self.overlay = False
+                return False
+            if self.drilldown_event:
+                self.drilldown_event = None
+                return False
+            if self.drilldown:
+                self.drilldown = None
+                return False
+            if self.search:
+                self.search = ''
+                return False
+        if key == ord('?'):
+            self.overlay = not self.overlay
+            return False
+        if self.overlay:
+            # The overlay is modal by design: it explains the view beneath
+            # it, so changing that view while it is up is meaningless.
+            # Lowercase q dismisses one layer, capital Q leaves the app —
+            # otherwise the only way out of two stacked layers is to guess
+            # how many times to press escape.
+            if key == ord('Q'):
+                return True
+            if key == ord('q'):
+                self.overlay = False
+            return False
+        # [space] toggles: it opens the highlighted repo and, from inside,
+        # closes it again. [enter] only opens — a key that also exits is
+        # useful, but a key you press to confirm should never be the key
+        # that undoes the thing you confirmed.
+        if key in (curses.KEY_ENTER, 10, 13, ord(' ')):
+            if self.drilldown_event or self.drilldown:
+                if key == ord(' '):
+                    self.drilldown_event = None
+                    self.drilldown = None
+                return False
+            if self.view == 'anomaly' and self.anomaly_pane == 0:
+                events = self._anomaly_events()
+                if events:
+                    cur = self.cursors['anomaly_events'].clamp(len(events),
+                                                               self._page())
+                    self.drilldown_event = events[cur.index]['day']
+                return False
+            repo = self.selected_repo()
+            if repo:
+                self.drilldown = repo
+            return False
+        if self.drilldown_event:
+            if key == ord('Q'):
+                return True
+            if key in (ord('q'), ord('h'), curses.KEY_LEFT,
+                       curses.KEY_BACKSPACE, 127, 8):
+                self.drilldown_event = None
+                return False
+            if key in (curses.KEY_DOWN, ord('j'), curses.KEY_UP, ord('k')):
+                events = self._anomaly_events()
+                if events:
+                    delta = 1 if key in (curses.KEY_DOWN, ord('j')) else -1
+                    cur = self.cursors['anomaly_events'].move(
+                        delta, len(events), self._page())
+                    self.drilldown_event = events[cur.index]['day']
+                return False
+            if key in (ord('t'), ord('T')):
+                step = 1 if key == ord('t') else -1
+                self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) + step)
+                                            % len(TIMEFRAMES)]
+                # The window moved; this day may no longer be in it.
+                days = self.data.window_days(self.timeframe)
+                if self.drilldown_event not in days:
+                    self.drilldown_event = None
+                return False
+            if key == ord('r'):
+                self.data.reload()
+                return False
+            return False
+        if self.drilldown:
+            if key == ord('Q'):
+                return True
+            if key in (ord('q'), ord('h'), curses.KEY_LEFT,
+                       curses.KEY_BACKSPACE, 127, 8):
+                self.drilldown = None
+                return False
+            if key == ord('t'):
+                self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) + 1)
+                                            % len(TIMEFRAMES)]
+                return False
+            if key == ord('T'):
+                self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) - 1)
+                                            % len(TIMEFRAMES)]
+                return False
+            if key == ord('r'):
+                self.data.reload()
+                return False
+            # Step through the same list the drilldown was opened from, so
+            # a repo can be compared with its neighbour without going back.
+            if key in (curses.KEY_DOWN, ord('j'), curses.KEY_UP, ord('k')):
+                rows = self._cursor_rows()
+                if rows:
+                    delta = 1 if key in (curses.KEY_DOWN, ord('j')) else -1
+                    cur = self.cursor().move(delta, len(rows), self._page())
+                    self.drilldown = rows[cur.index]
+                return False
+            # Everything else is inert while a repo is open: the account
+            # views' sorts and filters have no meaning on one repo, and
+            # silently changing the screen behind the drilldown is worse
+            # than doing nothing.
             return False
         if super().handle_key(key):
             return True
@@ -338,22 +709,54 @@ class AnalyticsTUI(TuiApp):
             self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) + 1) % len(TIMEFRAMES)]
         elif key == ord('T'):
             self.timeframe = TIMEFRAMES[(TIMEFRAMES.index(self.timeframe) - 1) % len(TIMEFRAMES)]
-        elif key in (ord('s'), ord('S')):
+        elif key == ord('s') and self.view == 'anomaly' and self.anomaly_pane == 0:
+            self.event_sort = (self.event_sort + 1) % len(self.EVENT_SORT_KEYS)
+            self.cursors['anomaly_events'].reset()
+        elif key == ord('S') and self.view == 'anomaly' and self.anomaly_pane == 0:
+            self.sort_flip['anomaly_events'] = not self.sort_flip.get(
+                'anomaly_events', False)
+            self.cursors['anomaly_events'].reset()
+        elif key == ord('S') and self.view in REPO_ROW_VIEWS:
+            self.sort_flip[self.view] = not self.sort_flip.get(self.view, False)
+            self.scroll = 0
+        elif key == ord('s'):
             if self.view == 'profile':
-                self.profile_sort = (self.profile_sort + 1) % 3
+                self.profile_sort = (self.profile_sort + 1) % len(self.PROFILE_SORT_KEYS)
                 self.scroll = 0
             elif self.view == 'table':
-                self.table_sort = (self.table_sort + 1) % 4
+                self.table_sort = (self.table_sort + 1) % len(self.TABLE_SORT_KEYS)
                 self.scroll = 0
-            elif self.view == 'top':
-                self.top_criterion = (self.top_criterion + 1) % len(self.TOP_CRITERIA)
+            elif self.view == 'audience':
+                self.audience_sort = (self.audience_sort + 1) % len(self.AUDIENCE_SORT_KEYS)
                 self.scroll = 0
+        elif key == ord('\t') and self.view == 'traffic':
+            self.traffic_pane = 1 - self.traffic_pane
+            self.cursor('traffic').reset()
+        elif key == ord('\t') and self.view == 'anomaly':
+            self.anomaly_pane = 1 - self.anomaly_pane
+        elif (self.view == 'anomaly'
+              and key in (ord('h'), ord('l'), curses.KEY_LEFT, curses.KEY_RIGHT)):
+            days = self.data.window_days(self.timeframe)
+            visible = getattr(self, '_anomaly_visible', len(days)) or len(days)
+            last = max(0, len(days) - visible)
+            step = -3 if key in (ord('h'), curses.KEY_LEFT) else 3
+            base = last if self.anomaly_day_offset is None else self.anomaly_day_offset
+            self.anomaly_day_offset = max(0, min(base + step, last))
+        elif key == ord('o'):
+            self.scope = (self.scope + 1) % len(SCOPES)
+            for cur in self.cursors.values():
+                cur.reset()
+            self.scroll = 0
+        elif key == ord('z') and self.view == 'deltas':
+            self.deltas_hide_zero = not self.deltas_hide_zero
+            self.scroll = 0
         elif key in (ord('f'), ord('F')):
             if self.view == 'anomaly':
-                self.anomaly_filter = (self.anomaly_filter + 1) % 4
+                self.anomaly_filter = ((self.anomaly_filter + 1)
+                                      % len(self.ANOMALY_SEVERITIES))
                 self.scroll = 0
             elif self.view == 'table':
-                self.table_status = (self.table_status + 1) % 4
+                self.table_status = (self.table_status + 1) % len(self._table_statuses())
                 self.scroll = 0
             elif self.view == 'funnel':
                 self.funnel_filter = (self.funnel_filter + 1) % (len(self._funnel_categories()) + 1)
@@ -361,22 +764,149 @@ class AnalyticsTUI(TuiApp):
         elif key == ord('l') and self.view == 'profile':
             self.profile_hide_low = not self.profile_hide_low
             self.scroll = 0
-        elif key in (curses.KEY_UP, ord('k')):
-            self.scroll = max(0, self.scroll - 1)
-        elif key in (curses.KEY_DOWN, ord('j')):
-            # Clamp: unbounded scrolling ran the list off the top and left the
-            # view blank with no indication of how far back 'k' had to go.
-            self.scroll = min(self.scroll + 1, max(0, self._scroll_bound() - 1))
-        elif key == ord('g'):
+        elif key == ord('l') and self.view == 'audience':
+            self.audience_hide_low = not self.audience_hide_low
             self.scroll = 0
-        elif key == ord('G'):
-            # last page, sized to the real terminal rather than MIN_ROWS
-            max_y, _ = self.stdscr.getmaxyx()
-            self.scroll = max(0, self._scroll_bound() - max(1, max_y - 8))
+        elif key in (curses.KEY_UP, ord('k'), curses.KEY_DOWN, ord('j'),
+                     ord('g'), ord('G')):
+            self._move(key)
         elif key == ord('/'):
             max_y, max_x = self.stdscr.getmaxyx()
             self._prompt_search(max_y, max_x)
         return False
+
+    def _move(self, key):
+        """j/k/g/G — a cursor on repo-row views, plain scroll elsewhere.
+
+        Both paths keep `self.scroll` authoritative for drawing, so the
+        views that have no notion of a selected repo (lang, freq) are
+        unaffected by the drilldown existing at all.
+        """
+        curses = self.curses
+        max_y, _ = self.stdscr.getmaxyx()
+        page = self._page(max_y)
+        if self.view == 'anomaly' and self.anomaly_pane == 0:
+            events = self._anomaly_events()
+            cur = self.cursors['anomaly_events']
+            if key in (curses.KEY_UP, ord('k')):
+                cur.move(-1, len(events), page)
+            elif key in (curses.KEY_DOWN, ord('j')):
+                cur.move(1, len(events), page)
+            elif key == ord('g'):
+                cur.home(len(events), page)
+            else:
+                cur.end(len(events), page)
+            return
+        if self.view in REPO_ROW_VIEWS:
+            rows = self._cursor_rows()
+            cur = self.cursor()
+            if key in (curses.KEY_UP, ord('k')):
+                cur.move(-1, len(rows), page)
+            elif key in (curses.KEY_DOWN, ord('j')):
+                cur.move(1, len(rows), page)
+            elif key == ord('g'):
+                cur.home(len(rows), page)
+            else:
+                cur.end(len(rows), page)
+            self.scroll = cur.scroll
+            return
+        bound = self._scroll_bound()
+        if key in (curses.KEY_UP, ord('k')):
+            self.scroll = max(0, self.scroll - 1)
+        elif key in (curses.KEY_DOWN, ord('j')):
+            # Clamp: unbounded scrolling ran the list off the top and left the
+            # view blank with no indication of how far back 'k' had to go.
+            self.scroll = min(self.scroll + 1, max(0, bound - 1))
+        elif key == ord('g'):
+            self.scroll = 0
+        else:
+            self.scroll = max(0, bound - max(1, max_y - 8))
+
+    def _no_run_note(self, what):
+        """Why a per-run view is empty, and what would actually fix it.
+
+        Telling someone to `catnip analyze` when there is no run on disk
+        sends them to a command that answers "no runs found". These views
+        read the newest run's CSVs, and the run — unlike the store — is
+        the part retention deletes.
+        """
+        if self.data.store_only:
+            return [
+                f'No run on disk, so there is no {what}.',
+                '',
+                'The durable store answers traffic, audience, deltas, anomalies,',
+                'intent and coupling — this view is not one of those: it reads a',
+                "run's CSVs, and runs are what `catnip prune` deletes.",
+                '',
+                'Run  catnip run  to collect one.',
+            ]
+        return [f'No {what} in the newest run.',
+                '', 'Run  catnip analyze  to rebuild it.']
+
+    def _put_lines(self, y, lines, max_x, indent=3):
+        for i, line in enumerate(lines):
+            self._put(y + i, indent, line[: max_x - indent - 1], self.curses.A_DIM)
+        return y + len(lines)
+
+    #: How a selected row is drawn. NOT a full-width inverse bar: these
+    #: views end in bars, sparklines and heatmap cells, and reverse video
+    #: across them destroys exactly the shape the row exists to show. The
+    #: name cell carries the highlight and the right edge carries a marker,
+    #: so the selection is legible at both ends of a wide row without
+    #: touching anything in between.
+    SELECT_MARK = '\u25c0'
+
+    def _scrollbar(self, top, height, total, offset, max_x):
+        """A scrollbar at the right edge; nothing when the list fits."""
+        scrollbar(self._put, self.curses, top, height, max_x - 1, total, offset,
+                  attr=self.curses.color_pair(6))
+
+    def _mark_selected(self, y, max_x, selected):
+        """Flag the right edge of a selected row."""
+        if selected:
+            self._put(y, max_x - 2, self.SELECT_MARK,
+                      self.curses.color_pair(5) | self.curses.A_BOLD)
+
+    def _traffic_lists(self):
+        """(top views, top clones) for the current window — the same lists
+        the traffic view draws and the cursor indexes into."""
+        tf = self.timeframe
+        wv = self.data.windowed_views(tf)
+        wc = self.data.windowed_clones(tf)
+        return (sorted(wv.items(), key=lambda kv: -kv[1])[:8],
+                sorted(wc.items(), key=lambda kv: -kv[1])[:8])
+
+    def _lang_rows(self, all_langs=False):
+        """Language distribution for the repos in scope.
+
+        The account-wide CSV is pre-aggregated per language and cannot be
+        filtered by repo, so anything other than "all" is recomputed from
+        the per-repo language bytes. A fork carries upstream's whole
+        codebase; leaving them in makes "your languages" a description of
+        other people's projects.
+        """
+        if SCOPES[self.scope] == 'all' or not self.data.knows_forks():
+            dist = self.data.lang_dist
+        else:
+            totals, repos = defaultdict(int), defaultdict(set)
+            for row in self.data.languages:
+                name = row.get('repo_name', '')
+                if not self.in_scope(name):
+                    continue
+                lang = row.get('language', '')
+                if not lang:
+                    continue
+                totals[lang] += _int(row, 'bytes')
+                repos[lang].add(name)
+            grand = sum(totals.values()) or 1
+            dist = [{'language': lang,
+                     'total_bytes': str(b),
+                     'total_bytes_pct': f'{b / grand * 100:.2f}',
+                     'repo_count': str(len(repos[lang]))}
+                    for lang, b in sorted(totals.items(), key=lambda kv: -kv[1])]
+        if all_langs:
+            return dist
+        return [r for r in dist if _float(r, 'total_bytes_pct') >= 0.1]
 
     def _funnel_categories(self):
         return sorted({r.get('category', '') for r in self.data.funnel_data
@@ -385,34 +915,15 @@ class AnalyticsTUI(TuiApp):
     def _scroll_bound(self):
         """Approximate number of rendered lines for the current view, for g/G."""
         d = self.data
-        if self.view == 'top':
-            return len(self._top_rows(self._active_criterion())[1])
         if self.view == 'lang':
             return len(d.lang_dist)
         if self.view == 'freq':
             return len(d.code_freq[:500])
-        if self.view == 'deltas':
-            t = d.totals
-            return len(t.get('repo_snapshots', {})) if t else 0
-        if self.view == 'anomaly':
-            return len(self._filtered_anomaly_data())
-        if self.view == 'profile':
-            return len(d.profile_data)
         if self.view == 'correlation':
-            return len(d.correlation_data)
-        if self.view == 'funnel':
-            return len(self._funnel_lines()[1]) + len(self._funnel_lines()[0]) + 3
-        if self.view == 'history':
-            return 0
+            return len(self.data.coupled(self.timeframe)['pairs'])
+        if self.view in REPO_ROW_VIEWS:
+            return len(self._cursor_rows())
         return len(d.repos)
-
-    def _filtered_anomaly_data(self):
-        data = self._filtered(self.data.anomaly_data)
-        severities = ('extreme', 'significant', 'minor')
-        if self.anomaly_filter == 0:
-            return data
-        target = severities[self.anomaly_filter - 1]
-        return [r for r in data if r.get('anomaly_type') == target]
 
     def render(self, max_y, max_x):
         self._render_header(max_x)
@@ -422,10 +933,20 @@ class AnalyticsTUI(TuiApp):
         if avail <= 0:
             return
 
+        if self.drilldown_event:
+            self._render_event_detail(avail, max_x)
+        elif self.drilldown:
+            self._render_drilldown(avail, max_x)
+        else:
+            self._render_view(avail, max_x)
+        if self.overlay:
+            self._render_overlay(max_y, max_x)
+
+    def _render_view(self, avail, max_x):
         if self.view == 'traffic':
             self._render_traffic_view(avail, max_x)
-        elif self.view == 'top':
-            self._render_top_view(avail, max_x)
+        elif self.view == 'audience':
+            self._render_audience_view(avail, max_x)
         elif self.view == 'table':
             self._render_table_view(avail, max_x)
         elif self.view == 'lang':
@@ -442,14 +963,47 @@ class AnalyticsTUI(TuiApp):
             self._render_correlation_view(avail, max_x)
         elif self.view == 'funnel':
             self._render_funnel_view(avail, max_x)
-        elif self.view == 'history':
-            self._render_history_view(avail, max_x)
+
+    def _render_overlay(self, max_y, max_x):
+        """The [?] derivation panel: how this view's numbers were computed.
+
+        Drawn over the view rather than replacing it, so the figures being
+        explained stay in peripheral view. The text comes from
+        derive.DERIVATIONS, which lives beside the formulas themselves —
+        an overlay maintained separately from the code it describes starts
+        lying within one release.
+        """
+        curses = self.curses
+        lines = derive.derivation('drilldown' if self.drilldown else self.view)
+        width = min(max_x - 4, max(len(line) for line in lines) + 4)
+        height = min(max_y - 4, len(lines) + 4)
+        top = max(2, (max_y - height) // 2)
+        left = max(1, (max_x - width) // 2)
+        border = curses.color_pair(6) | curses.A_BOLD
+        self._put(top, left, '┌' + '─' * (width - 2) + '┐', border)
+        for i in range(1, height - 1):
+            self._put(top + i, left, '│' + ' ' * (width - 2) + '│', border)
+        self._put(top + height - 1, left, '└' + '─' * (width - 2) + '┘', border)
+        for i, line in enumerate(lines[: height - 3]):
+            attr = (curses.color_pair(2) | curses.A_BOLD) if i == 0 else 0
+            if line.startswith('  ') and ('=' in line or line.strip().startswith('|')):
+                attr = curses.color_pair(3)
+            self._put(top + 1 + i, left + 2, line[: width - 4], attr)
+        hint = ' [?] or [esc] closes '
+        if len(hint) < width - 2:
+            self._put(top + height - 1, left + 2, hint, self.curses.A_DIM)
 
     def _render_header(self, max_x):
         curses = self.curses
-        owner = self.data.totals.get('owner') or 'github'
+        # 'github' as a fallback reads like an account name and is not one.
+        # totals.json can legitimately lack an owner (a run with no manifest
+        # rebuilds it empty), and the durable store knows it independently.
+        owner = (self.data.totals.get('owner')
+                 or (self.data.history or {}).get('owner')
+                 or '(owner unset)')
         search_tag = f'  /{self.search}' if self.search else ''
-        text = f' catnip  [{owner}]  [{self.timeframe}]{search_tag}'
+        scope_tag = '' if self.scope_label() == 'all' else f'  [{self.scope_label()}]'
+        text = f' catnip  [{owner}]  [{self.timeframe}]{scope_tag}{search_tag}'
         self._put(0, 0, text.ljust(max_x - 1), curses.color_pair(6) | self.curses.A_BOLD)
         # View strip: digit-key jump targets with the active view highlighted.
         # The full strip is ~100 cols, so shorten the inactive names to fit
@@ -475,12 +1029,14 @@ class AnalyticsTUI(TuiApp):
     def _render_traffic_view(self, avail, max_x):
         curses = self.curses
         tf = self.timeframe
+        if tf == 'epoch':
+            return self._render_epoch_view(avail, max_x)
         win = TF_LABEL.get(tf, 'last 14d')
 
-        # Windowed traffic for this timeframe (t/T cycles).
+        # Windowed traffic for this timeframe (t/T cycles). The per-repo
+        # windowed totals come from _traffic_lists, so the cursor and the
+        # drawn lists index the same ranking.
         n = DAY_WINDOW.get(tf, 14)
-        wv = self.data.windowed_views(tf)
-        wc = self.data.windowed_clones(tf)
         if n is None:
             # 'all' reads the history store's account-wide series (>14 days once
             # ingested); falls back to the fetch's own window.
@@ -512,16 +1068,28 @@ class AnalyticsTUI(TuiApp):
                       curses.color_pair(6) | self.curses.A_BOLD)
             y += 2
 
-        # Two side-by-side top lists, windowed to the timeframe.
+        # Two side-by-side top lists, windowed to the timeframe. They are
+        # the only repo names on the landing screen, so they carry the
+        # cursor too: [tab] moves between the lists, [enter] opens the
+        # highlighted repo. A ranked list you cannot act on is a dead end.
         col2 = max_x // 2
-        top_v = sorted(wv.items(), key=lambda kv: -kv[1])[:8]
-        top_c = sorted(wc.items(), key=lambda kv: -kv[1])[:8]
-        self._put(y, 1, f'Top Views ({win})', curses.color_pair(6) | self.curses.A_BOLD)
-        self._put(y, col2, f'Top Clones ({win})', curses.color_pair(6) | self.curses.A_BOLD)
-        for i, (name, val) in enumerate(top_v):
-            self._put(y + 1 + i, 3, f'{i+1:>2}. {name[:18]:<18} {_compact_num(val):>6}', 0)
-        for i, (name, val) in enumerate(top_c):
-            self._put(y + 1 + i, col2 + 2, f'{i+1:>2}. {name[:18]:<18} {_compact_num(val):>6}', 0)
+        top_v, top_c = self._traffic_lists()
+        focus = self.traffic_pane
+        cur = self.cursor('traffic')
+        cur.clamp(len(top_v if focus == 0 else top_c), max(1, len(top_v)))
+        head = curses.color_pair(6) | self.curses.A_BOLD
+        self._put(y, 1, f'Top Views ({win})', head)
+        self._put(y, col2, f'Top Clones ({win})', head)
+        self._put(y, col2 - 12 if focus == 0 else max_x - 12, '[tab]',
+                  curses.color_pair(5))
+        for pane, (rows, x) in enumerate(((top_v, 3), (top_c, col2 + 2))):
+            for i, (name, val) in enumerate(rows):
+                selected = pane == focus and i == cur.index
+                marker = '>' if selected else ' '
+                attr = curses.color_pair(5) if selected else 0
+                self._put(y + 1 + i, x - 1,
+                          f'{marker}{i+1:>2}. {name[:18]:<18} {_compact_num(val):>6}',
+                          attr)
         y += max(len(top_v), len(top_c)) + 2
 
         tt = self.data._totals.get('total_stars', 0)
@@ -550,160 +1118,294 @@ class AnalyticsTUI(TuiApp):
                 self._put(y + 1, 1, 'uniques ≈ distinct visitors (excludes your own '
                           'repeat traffic, which inflates raw counts)', self.curses.A_DIM)
 
-    # criterion -> (heading, one-line meaning, unit, hide-zeros)
-    TOP_CRITERIA = {
-        'stars':        ('Stars', 'GitHub stargazers', 'stars', True),
-        'forks':        ('Forks', 'number of forks', 'forks', True),
-        'contributors': ('Contributors', 'unique contributors (stats API)', 'people', True),
-        'activity':     ('Activity Score', 'blend of stars, forks, commits, contributors (0-1)', '', True),
-        'recent':       ('Least Recently Pushed', 'days since last push (larger = more neglected)', 'days', False),
-        'age':          ('Oldest Repos', 'repo age', 'days', False),
-        'clones':       ('Clones', 'git clones, all-time tracked', 'clones', True),
-        'traffic':      ('Traffic Score', 'blend of clones, views, unique visitors (0-1)', '', True),
-    }
+    # ---- A. audience: human vs fetcher ---------------------------------
 
-    TOP_ROW_CAP = 15  # per-criterion cap (plan 08 phase 5)
-
-    def _criteria_keys(self):
-        return list(self.TOP_CRITERIA.keys())
-
-    def _active_criterion(self):
-        keys = self._criteria_keys()
-        return keys[self.top_criterion % len(keys)]
-
-    def _top_rows(self, crit):
-        """(meta, rows) for one criterion: meta=(heading,meaning,unit,hide_zero),
-        rows=[(name, value)] in CSV rank order, zeros hidden per the criterion,
-        capped at TOP_ROW_CAP."""
-        meta = self.TOP_CRITERIA[crit]
-        hide_zero = meta[3]
-        rows = []
-        for r in self._filtered(self.data.top_repos_csv):
-            if r.get('sort_criteria', '') != crit:
-                continue
-            value = _float(r, 'value')
-            if hide_zero and value == 0:
-                continue
-            rows.append((r.get('repo_name', ''), value))
-            if len(rows) >= self.TOP_ROW_CAP:
-                break
-        return meta, rows
-
-    def _render_top_view(self, avail, max_x):
-        curses = self.curses
-        keys = self._criteria_keys()
-        crit = self._active_criterion()
-        (heading, meaning, unit, _hz), rows = self._top_rows(crit)
-        pos = f'{self.top_criterion % len(keys) + 1}/{len(keys)}'
-        self._put(2, 1, f'Top Repos — {heading}  ({pos})',
-                  curses.color_pair(6) | self.curses.A_BOLD)
-        self._put(3, 1, f'{meaning}.  Press [s] to cycle criterion.', self.curses.A_DIM)
-        if not rows:
-            self._put(5, 3, 'No repos with a value for this criterion.', self.curses.A_DIM)
-            return
-        unit_lbl = unit or 'score'
-        self._put(5, 3, f'  {"#":>3}  {"repo":<26} {unit_lbl:>10}  relative',
-                  curses.color_pair(2) | self.curses.A_BOLD)
-        max_v = max((v for _, v in rows), default=1) or 1
-        # Relative bar fills the width after the rank/name/value columns.
-        bar_w = max(10, max_x - 49)
-        scroll = self.scroll
-        shown = avail - 4
-        for i, (name, value) in enumerate(rows[scroll:scroll + shown]):
-            rank = scroll + i + 1
-            vs = f'{value:.3f}' if not unit else f'{int(value):,}'
-            bar = self._hbar(value, max_v, bar_w)
-            self._put(6 + i, 3, f'  {rank:>3}. {name[:26]:<26} {vs:>10}  {bar}',
-                      curses.color_pair(2) if i == 0 and scroll == 0 else 0)
-        self.scroll_indicator(2, max_x, len(rows), shown)
-
-    TABLE_SORT_KEYS = (
-        ('score', lambda r: float(r.get('traffic_score', 0) or 0)),
-        ('clones', lambda r: _int(r, 'total_clones')),
-        ('views', lambda r: _int(r, 'total_views')),
-        ('name', lambda r: r.get('repo_name', '').lower()),
+    AUDIENCE_SORT_KEYS = (
+        ('score', lambda r: r['score'], False),
+        ('ratio', lambda r: r['ratio'], True),
+        ('burst', lambda r: (r['burst'] if r['burst'] is not None else -1), True),
+        ('clones', lambda r: r['clones'], True),
+        ('name', lambda r: r['repo'].lower(), False),
     )
 
+    AUDIENCE_COLORS = {'audience': 1, 'crawler': 4, 'mixed': 3, 'low-signal': 0}
+
+    def _audience_rows(self):
+        label, key, natural = self.AUDIENCE_SORT_KEYS[self.audience_sort]
+        desc = self._sort_desc(natural)
+        rows = [r for r in self.data.audience(self.timeframe).values()
+                if self.in_scope(r['repo'])]
+        if self.audience_hide_low:
+            rows = [r for r in rows if r['label'] != 'low-signal']
+        if self.search:
+            needle = self.search.lower()
+            rows = [r for r in rows if needle in r['repo'].lower()]
+        rows.sort(key=key, reverse=desc)
+        # Classified repos first, unclassifiable ones beneath. A repo with
+        # seven data points has not earned a place in the ordering, but
+        # dropping it silently invites "where did it go".
+        return ([r for r in rows if r['label'] != 'low-signal']
+                + [r for r in rows if r['label'] == 'low-signal'])
+
+    def _render_audience_view(self, avail, max_x):
+        """Who is fetching this repo — a person, or a machine?
+
+        The question the live data raised: one repo took 541 clones from
+        three unique visitors in an afternoon while another took 448 from
+        127. Both look like "adoption" in a clone count, and only one is.
+        """
+        curses = self.curses
+        sort_label = self.AUDIENCE_SORT_KEYS[self.audience_sort][0]
+        rows = self._audience_rows()
+        win = TF_LABEL.get(self.timeframe, 'window')
+        self._put(2, 1, f'Audience — human vs fetcher  ({win})  [sort: {sort_label}]',
+                  curses.color_pair(6) | self.curses.A_BOLD)
+        low_tag = 'low hidden' if self.audience_hide_low else 'l=hide low'
+        self._put(3, 1, f'ratio = uniq_cloners / uniq_visitors, log scale.  [{low_tag}]  '
+                  '[?] explains every component.', self.curses.A_DIM)
+        x = 1
+        for name in ('audience', 'mixed', 'crawler', 'low-signal'):
+            pair = self.AUDIENCE_COLORS[name]
+            self._put(4, x, '\u2588',
+                      curses.color_pair(pair) if pair else self.curses.A_DIM)
+            self._put(4, x + 2, name, self.curses.A_DIM)
+            x += len(name) + 5
+        self._put(4, x + 2, f'(low-signal = fewer than {derive.AUDIENCE_MIN_SIGNAL} '
+                  f'unique cloners + visitors: not enough to classify)',
+                  self.curses.A_DIM)
+        if not rows:
+            self._put(6, 3, 'No repo has traffic in this window.', self.curses.A_DIM)
+            return
+
+        name_w = min(24, max(12, max_x - 62))
+        header = (f'  {"repo":<{name_w}} {"score":>6} {"class":<9} {"ratio":>7} '
+                  f'{"burst":>6} {"depth":>6} {"ref":>4}  clones/views')
+        self._put(6, 3, header, curses.color_pair(2) | self.curses.A_BOLD)
+        page = avail - 7
+        cur = self.cursor('audience').clamp(len(rows), page)
+        self.scroll = cur.scroll
+        for i, row in enumerate(rows[cur.scroll:cur.scroll + page]):
+            idx = cur.scroll + i
+            pair = self.AUDIENCE_COLORS.get(row['label'], 0)
+            color = curses.color_pair(pair) if pair else self.curses.A_DIM
+            selected = idx == cur.index
+            burst = f"{row['burst']:.2f}" if row['burst'] is not None else '  -'
+            depth = f"{row['depth']:.1f}" if row['depth'] is not None else '  -'
+            refs = (str(row['referrer_diversity'])
+                    if row['referrer_diversity'] is not None else '-')
+            marker = '>' if selected else ' '
+            self._put(8 + i, 3, f'{marker} {row["repo"][:name_w]:<{name_w}}',
+                      curses.color_pair(5) if selected else color)
+            self._put(8 + i, 3 + 2 + name_w,
+                      f' {row["score"]:>6.2f} '
+                      f'{row["label"]:<11} {row["ratio"]:>7.2f} {burst:>6} {depth:>6} '
+                      f'{refs:>4}  {_compact_num(row["clones"])}c/'
+                      f'{_compact_num(row["views"])}v', color)
+            self._mark_selected(8 + i, max_x, selected)
+        self._scrollbar(8, page, len(rows), cur.scroll, max_x)
+        self.scroll_indicator(2, max_x, len(rows), page)
+        # Say what could not be computed rather than letting a dash read as
+        # a zero: a withheld component is missing evidence, not a low score.
+        missing = sorted({m for r in rows for m in r['missing']})
+        if missing and 9 + min(page, len(rows)) < avail + 2:
+            self._put(9 + min(page, len(rows)), 3,
+                      f'withheld for some repos (see [?]): {", ".join(missing)}',
+                      self.curses.A_DIM)
+
+    # Sortable columns, three of them derived. The retired 'top' view
+    # ranked repos by age and stars on a screen of their own; those are
+    # columns, not screens, and momentum/audience/depth are the questions
+    # its criteria were reaching for and never asked.
+    # No 'score' key: it sorted by the run's own traffic_score, a column
+    # this view does not show and cannot show without a run. Sorting by an
+    # invisible number is indistinguishable from not sorting.
+    TABLE_SORT_KEYS = (
+        ('clones', lambda r: r['clones']),
+        ('momentum', lambda r: r['momentum']),
+        ('audience', lambda r: r['audience']),
+        ('depth', lambda r: (r['depth'] is not None, r['depth'] or 0)),
+        ('views', lambda r: r['views']),
+        ('stars/uv', lambda r: (r['stars_per_uv'] is not None, r['stars_per_uv'] or 0)),
+        ('name', lambda r: r['repo_name'].lower()),
+    )
+
+    #: The filter cycle is built from the statuses actually present, not
+    #: from this list. With no run on disk every row is 'store', and a
+    #: hard-coded cycle walked the operator through three consecutive
+    #: screens reading "No repos match" with no hint that the filter, not
+    #: the data, was empty.
     TABLE_STATUS = ('all', 'active', 'stale', 'archived')
+
+    def _table_rows(self):
+        return self._table_rows_filtered()
+
+    def _table_rows_raw(self):
+        """Repo rows joined with the derived columns.
+
+        The CSV supplies identity and status; the store supplies every
+        number that moves. A repo present in the store but pruned from the
+        newest run still gets a row — the store outlives runs, and a table
+        that hides what the store remembers is a table that shrinks when
+        retention runs.
+        """
+        deltas = self.data.deltas(self.timeframe)
+        audience = self.data.audience(self.timeframe)
+        depth = self.data.funnel_depth()
+        days = self.data.window_days(self.timeframe)
+        rows = []
+        seen = set()
+        for r in self._filtered(self.data.repos):
+            name = r.get('repo_name', '')
+            seen.add(name)
+            rows.append(self._table_row(name, r, deltas, audience, depth, days))
+        for name in derive.repo_names(self.data.history):
+            if name in seen or name not in deltas or not self.in_scope(name):
+                continue
+            if self.search and self.search.lower() not in name.lower():
+                continue
+            rows.append(self._table_row(name, {}, deltas, audience, depth, days))
+        return rows
+
+    def _table_rows_filtered(self):
+        rows = self._table_rows_raw()
+        status_filter = self._table_status(rows)
+        if status_filter == 'with traffic':
+            rows = [r for r in rows if r['clones'] or r['views']]
+        elif status_filter != 'all':
+            rows = [r for r in rows if r['status'] == status_filter]
+        label, key = self.TABLE_SORT_KEYS[self.table_sort]
+        return sorted(rows, key=key, reverse=self._sort_desc(label != 'name'))
+
+    def _table_statuses(self, rows=None):
+        """The filter cycle: traffic first, then 'all', then real statuses.
+
+        'with traffic' leads because it answers the question the table is
+        usually open for. Ninety rows of which sixty read 0 clones and 0
+        views is a directory listing, not an account view.
+        """
+        if rows is None:
+            rows = self._table_rows_raw()
+        present = {r['status'] for r in rows}
+        ordered = [s for s in self.TABLE_STATUS[1:] if s in present]
+        ordered += sorted(present - set(self.TABLE_STATUS))
+        return ['with traffic', 'all', *ordered]
+
+    def _table_status(self, rows=None):
+        options = self._table_statuses(rows)
+        return options[self.table_status % len(options)]
+
+    def _table_row(self, name, csv_row, deltas, audience, depth, days):
+        d = deltas.get(name) or {}
+        a = audience.get(name) or {}
+        f = depth.get(name) or {}
+        uv = derive.total(self.data.history, name, 'views', days, derive.UNIQ)
+        stars = _int(csv_row, 'stars')
+        return {
+            'repo_name': name,
+            # 'no run': active/stale/archived comes from a run's repo CSV,
+            # and there is no run — the repo was renamed or deleted, or
+            # retention swept the run. The store outlives runs, so the row
+            # survives with its traffic intact and its status unknown.
+            # 'store' was the first word here and nobody could tell what it
+            # claimed; the status column should say what is not known, not
+            # where the row came from.
+            'status': csv_row.get('status') or ('unknown' if csv_row else 'no run'),
+            'score': float(csv_row.get('traffic_score', 0) or 0),
+            'clones': (d.get('clones') or {}).get('cur', 0),
+            'views': (d.get('views') or {}).get('cur', 0),
+            'momentum': (d.get('clones') or {}).get('delta') or 0,
+            'comparable': d.get('comparable', False),
+            'audience': a.get('score', 0.0),
+            'audience_label': a.get('label'),
+            # None, not 0.0, when the input is absent entirely: a repo with
+            # no path data has not been measured as shallow, and a repo whose
+            # run has been pruned has not been measured as unstarred. Same
+            # rule the audience composite follows.
+            'depth': f.get('depth_ratio') if f else None,
+            'stars': stars if csv_row else None,
+            'stars_per_uv': (stars / max(uv, 1)) if csv_row else None,
+        }
 
     def _render_table_view(self, avail, max_x):
         curses = self.curses
-        repos = self._filtered(self.data.repos)
-        status_filter = self.TABLE_STATUS[self.table_status]
-        if status_filter != 'all':
-            repos = [r for r in repos if (r.get('status') or 'unknown') == status_filter]
-        sort_label, sort_key = self.TABLE_SORT_KEYS[self.table_sort]
-        repos = sorted(repos, key=sort_key, reverse=(sort_label != 'name'))
-
-        # Title row carries the count badge (was colliding with the header
-        # columns at narrow widths). Score-color legend sits at the top (plan 13)
-        # so it stays visible while scrolling.
-        self._put(2, 1, f'Repo Table  [{len(repos)}] {status_filter}',
-                  curses.color_pair(6) | self.curses.A_BOLD)
-        lx = max(34, len(f'Repo Table  [{len(repos)}] {status_filter}') + 4)
-        if lx + 30 < max_x:
-            self._put(2, lx, 'score:', self.curses.A_DIM)
-            self._put(2, lx + 7, '>0.7', curses.color_pair(1))
-            self._put(2, lx + 12, '0.3-0.7', curses.color_pair(3))
-            self._put(2, lx + 20, '<0.3', self.curses.A_DIM)
-        if not repos:
-            self._put(3, 1, 'No repos match.', self.curses.A_DIM)
+        rows = self._table_rows()
+        status_filter = self._table_status()
+        name = self.TABLE_SORT_KEYS[self.table_sort][0]
+        sort_label = f'{name} {self.sort_arrow(self._sort_desc(name != "name"))}'
+        win = TF_LABEL.get(self.timeframe, 'window')
+        self._put(2, 1, f'Repo Table  [{len(rows)}] {status_filter}  ({win})  '
+                  f'[sort: {sort_label}]', curses.color_pair(6) | self.curses.A_BOLD)
+        note = ('momentum and audience follow t/T; depth is rolling 14d. '
+                '[?] explains each column.')
+        if self.data.store_only:
+            note = ('no run on disk, so status/depth/stars are unknown ("no run") '
+                    '\u2014 traffic columns come from the durable store.')
+        self._put(3, 1, note, self.curses.A_DIM)
+        if not rows:
+            self._put(5, 3, 'No repos match.', self.curses.A_DIM)
             return
-        # Adaptive columns: name gets whatever the numeric block leaves.
-        name_w = max(12, min(40, max_x - 38))
-        c_clones = 6 + name_w
-        c_views = c_clones + 9
-        c_score = c_views + 9
-        c_status = c_score + 9
-        self._put(3, 1,
-                  f'{"#":>3}  {"repo":<{name_w}} {"clones":>8} {"views":>8} {"score":>7}  status',
-                  curses.color_pair(2) | self.curses.A_BOLD)
 
-        scroll = self.scroll
-        shown = avail - 5
-        for i in range(min(shown, len(repos) - scroll)):
-            r = repos[scroll + i]
-            name = r.get('repo_name', '')[:name_w]
-            clones = _int(r, 'total_clones')
-            views = _int(r, 'total_views')
-            score = float(r.get('traffic_score', 0) or 0)
-            status = r.get('status') or 'unknown'
-            if score > 0.7:
-                color = curses.color_pair(1)
-            elif score > 0.3:
-                color = curses.color_pair(3)
-            else:
-                color = self.curses.A_DIM
-            if status == 'active':
-                s_color = curses.color_pair(1)
-            elif status == 'stale':
-                s_color = self.curses.A_DIM
-            elif status == 'archived':
-                s_color = curses.color_pair(4)
-            else:
-                s_color = 0
-            row = scroll + i + 1
-            self._put(4 + i, 1, f'{row:>3}. {name:<{name_w}}', 0)
-            self._put(4 + i, c_clones, f'{_compact_num(clones):>8}', color)
-            self._put(4 + i, c_views, f'{_compact_num(views):>8}', color)
-            self._put(4 + i, c_score, f'{score:>7.3f}', color)
-            self._put(4 + i, c_status, f'[{status:>8}]', s_color)
-        self.scroll_indicator(2, max_x, len(repos), shown)
+        name_w = max(10, min(28, max_x - 60))
+        self._put(5, 3,
+                  f'  {"repo":<{name_w}} {"clones":>7} {"views":>7} {"moment":>7} '
+                  f'{"aud":>5} {"depth":>6} {"st/uv":>6}  status',
+                  curses.color_pair(2) | self.curses.A_BOLD)
+        page = avail - 6
+        cur = self.cursor('table').clamp(len(rows), page)
+        self.scroll = cur.scroll
+        for i, r in enumerate(rows[cur.scroll:cur.scroll + page]):
+            idx = cur.scroll + i
+            selected = idx == cur.index
+            base = 0
+            marker = '>' if selected else ' '
+            self._put(7 + i, 3, f'{marker} {r["repo_name"][:name_w]:<{name_w}}',
+                      curses.color_pair(5) if selected else 0)
+            self._put(7 + i, 3 + 2 + name_w,
+                      f' {_compact_num(r["clones"]):>7} '
+                      f'{_compact_num(r["views"]):>7} ', 0)
+            x = 3 + 2 + name_w + 1 + 8 + 8
+            mom = f'{r["momentum"]:>+7d}' if r['comparable'] else '    n/a'
+            self._put(7 + i, x, mom, base or self._delta_color(
+                r['momentum'] if r['comparable'] else None))
+            aud_pair = self.AUDIENCE_COLORS.get(r['audience_label'], 0)
+            self._put(7 + i, x + 8, f'{r["audience"]:>5.2f}',
+                      base or (curses.color_pair(aud_pair) if aud_pair
+                               else self.curses.A_DIM))
+            depth = ('     -' if r['depth'] is None else f'{r["depth"]:>6.2f}')
+            self._put(7 + i, x + 14, depth,
+                      base or (curses.color_pair(1) if (r['depth'] or 0) >= 1.0
+                               else self.curses.A_DIM))
+            st_uv = ('     -' if r['stars_per_uv'] is None
+                     else f'{r["stars_per_uv"]:>6.2f}')
+            self._put(7 + i, x + 21, st_uv, base or self.curses.A_DIM)
+            self._put(7 + i, x + 29, f'[{r["status"]:>8}]',
+                      base or self._status_color(r['status']))
+            self._mark_selected(7 + i, max_x, selected)
+        self._scrollbar(7, page, len(rows), cur.scroll, max_x)
+        self.scroll_indicator(2, max_x, len(rows), page)
+
+    def _status_color(self, status):
+        curses = self.curses
+        if status == 'active':
+            return curses.color_pair(1)
+        if status == 'archived':
+            return curses.color_pair(4)
+        return self.curses.A_DIM
 
     def _render_lang_view(self, avail, max_x):
         curses = self.curses
         # Only languages >= 0.1% of the codebase; the long <0.1% tail is noise.
-        dist = [r for r in self.data.lang_dist if _float(r, 'total_bytes_pct') >= 0.1]
-        hidden = len(self.data.lang_dist) - len(dist)
+        dist = self._lang_rows()
+        hidden = len(self._lang_rows(all_langs=True)) - len(dist)
         title = 'Language Distribution  (by bytes, >=0.1%)'
         if hidden:
             title += f'  [{hidden} smaller languages hidden]'
         self._put(2, 1, title, curses.color_pair(6) | self.curses.A_BOLD)
-        self._put(3, 3, f'{"language":<18} {"share":<25} {"bytes":>12}  repos',
+        self._put(4, 3, f'{"language":<18} {"share":<25} {"bytes":>12}  repos',
                   curses.color_pair(2) | self.curses.A_BOLD)
         scroll = self.scroll
         if not dist:
-            self._put(4, 3, 'No language data.', self.curses.A_DIM)
+            self._put_lines(6, self._no_run_note('language data'), max_x)
             return
         # Fixed readable palette (skip pair 5 = black-on-cyan reverse video).
         palette = [curses.color_pair(1), curses.color_pair(2), curses.color_pair(3),
@@ -711,7 +1413,7 @@ class AnalyticsTUI(TuiApp):
         max_bytes = max((_int(r, 'total_bytes') for r in dist), default=1) or 1
         # Bar fills the width left after the fixed language + numeric columns.
         bar_w = max(10, max_x - 50)
-        for i, r in enumerate(dist[scroll:scroll + avail - 3]):
+        for i, r in enumerate(dist[scroll:scroll + avail - 5]):
             idx = scroll + i
             lang = r.get('language', '')[:18]
             tb = _int(r, 'total_bytes')
@@ -719,32 +1421,37 @@ class AnalyticsTUI(TuiApp):
             rc = r.get('repo_count', '')
             bar = self._hbar(tb, max_bytes, bar_w)
             color = palette[idx % len(palette)] if idx < 6 else self.curses.A_DIM
-            self._put(4 + i, 3, f'{lang:<18} {bar:<{bar_w}} {tb:>12,} ({pct:>5.2f}%) {rc:>3}', color)
+            self._put(6 + i, 3, f'{lang:<18} {bar:<{bar_w}} {tb:>12,} ({pct:>5.2f}%) {rc:>3}', color)
 
     def _render_freq_view(self, avail, max_x):
         curses = self.curses
-        freq = self.data.code_freq
+        freq = self._filtered(self.data.code_freq)
         if not freq:
             self._put(2, 1, 'Code Frequency (Weekly Commits)',
                       curses.color_pair(6) | self.curses.A_BOLD)
-            msg = [
-                'No commit-frequency data available.',
-                '',
-                "GitHub's stats endpoints (commit_activity / code_frequency) return",
-                'HTTP 202 while GitHub computes them in the background. fetch-github.sh',
-                'now warms these up early and collects them later in the same run, so a',
-                'single  make fetch  should populate this. If it stays empty, the repos',
-                'genuinely have no commits in the tracked window (or try one more fetch).',
-            ]
-            for i, line in enumerate(msg):
-                self._put(4 + i, 3, line, self.curses.A_DIM)
+            msg = self._no_run_note('commit-frequency data')
+            if not self.data.store_only:
+                # The other reason this view is empty, and the more common
+                # one on a first run: GitHub computes these asynchronously
+                # and answers 202 with an empty body until it is done.
+                msg += [
+                    '',
+                    "GitHub's stats endpoints (commit_activity / code_frequency)",
+                    'return HTTP 202 while GitHub computes them in the background.',
+                    'catnip warms them early and collects them later in the same run,',
+                    'so one  catnip run  should populate this. If it stays empty, the',
+                    'repos genuinely have no commits in the tracked window.',
+                ]
+            self._put_lines(4, msg, max_x)
             return
 
         # Aggregate commits per ISO week across all repos -> time-series chart.
         by_week = defaultdict(int)
         for r in freq:
             by_week[r.get('week_label', '')] += _int(r, 'commits')
-        series = [{'label': wl[-5:], 'count': c}
+        # '2026-W31' truncated to its last five characters read '6-W31'.
+        # Two-digit year plus week is the same width and says which year.
+        series = [{'label': (wl[2:4] + wl[5:]) if len(wl) >= 8 else wl, 'count': c}
                   for wl, c in sorted(by_week.items()) if wl]
         total = sum(b['count'] for b in series)
         plot_h = max(3, min(10, avail - 8))
@@ -800,148 +1507,558 @@ class AnalyticsTUI(TuiApp):
                 c['merged'] += 1
         return counts
 
+    def _delta_rows(self):
+        """Rows for the deltas view, sorted by the size of the movement.
+
+        Replaces a diff of two rolling-total snapshots. Those totals lose
+        their oldest day every night, so their difference mixed "what
+        happened" with "what aged out" and produced confident negatives
+        for repos where nothing had happened at all. These come from the
+        daily store and respect the timeframe selector, which the old view
+        ignored outright.
+        """
+        rows = [r for r in self.data.deltas(self.timeframe).values()
+                if self.in_scope(r['repo'])]
+        prc = self._windowed_pr_counts()
+        for row in rows:
+            row['prs'] = prc.get(row['repo'], {'opened': 0, 'merged': 0})
+        if self.deltas_hide_zero:
+            # "Nothing this window" means nothing happened IN it. A repo
+            # whose only number is a negative delta against a busier
+            # fortnight ago is not activity; it was filling the screen with
+            # rows whose current column read 0.
+            rows = [r for r in rows
+                    if (r['clones']['cur'] or r['views']['cur']
+                        or r['prs']['opened'] or r['prs']['merged'])]
+        if self.search:
+            needle = self.search.lower()
+            rows = [r for r in rows if needle in r['repo'].lower()]
+        return sorted(rows, key=lambda r: -(abs(r['clones']['delta'] or r['clones']['cur'])
+                                            + abs(r['views']['delta'] or r['views']['cur'])))
+
     def _render_deltas_view(self, avail, max_x):
         curses = self.curses
-        self._put(2, 1, 'Cross-Fetch Deltas + PR Activity',
+        rows = self._delta_rows()
+        win = TF_LABEL.get(self.timeframe, 'window')
+        n = len(self.data.window_days(self.timeframe)) or 1
+        self._put(2, 1, f'Deltas — windowed change and rate  ({win})',
                   curses.color_pair(6) | self.curses.A_BOLD)
-        self._put(3, 1, 'Δ since previous fetch snapshot (stars/forks/clones/views); '
-                  f'PRs opened/merged in {TF_LABEL.get(self.timeframe, "window")} (t/T cycles).',
-                  self.curses.A_DIM)
-        t = self.data.totals
-        if not t or 'repo_snapshots' not in t:
-            self._put(5, 1, 'No rolling totals. Run  make totals  first.', self.curses.A_DIM)
+        comparable = rows[0]['comparable'] if rows else False
+        note = (f'\u0394 = this {n}d window minus the previous {n}d, from the daily store.'
+                if comparable else
+                f'No previous {n}d window in the store yet — showing totals and rates only.')
+        self._put(3, 1, note + '  [z] toggles unchanged rows.', self.curses.A_DIM)
+        if not rows:
+            self._put(5, 3, 'Nothing moved in this window.', self.curses.A_DIM)
             return
-        prc = self._windowed_pr_counts()
-        # Header
-        self._put(5, 3, f'{"repo":<26}{"Δstars":>8}{"Δforks":>8}{"Δclones":>9}{"Δviews":>9}'
-                  f'{"+PRopen":>8}{"+PRmrg":>7}',
+
+        name_w = min(24, max(12, max_x - 68))
+        spark_w = max(6, min(14, n))
+        self._put(5, 3,
+                  f'  {"repo":<{name_w}} {"clones":<{spark_w}} {"cur":>6} {DELTA:>7} '
+                  f'{"/day":>6}  {"views":>6} {DELTA:>7}  {"PR+":>4}{"PRm":>4}',
                   curses.color_pair(2) | self.curses.A_BOLD)
-        scroll = self.scroll
-        snap_list = sorted(
-            t['repo_snapshots'].items(),
-            key=lambda x: (abs(x[1].get('clones_delta', 0)) + abs(x[1].get('views_delta', 0)),
-                           abs(x[1].get('stars_delta', 0))),
-            reverse=True)
-        shown = 0
-        for name, snap in snap_list[scroll:]:
-            sd = snap.get('stars_delta', 0)
-            fd = snap.get('forks_delta', 0)
-            cd = snap.get('clones_delta', 0)
-            vd = snap.get('views_delta', 0)
-            pr = prc.get(name, {'opened': 0, 'merged': 0})
-            po, pm = pr['opened'], pr['merged']
-            if sd == fd == cd == vd == 0 and po == 0 and pm == 0:
+        page = avail - 6
+        cur = self.cursor('deltas').clamp(len(rows), page)
+        self.scroll = cur.scroll
+        for i, row in enumerate(rows[cur.scroll:cur.scroll + page]):
+            idx = cur.scroll + i
+            c, v = row['clones'], row['views']
+            spark = _sparkline(c['series'][-spark_w:])
+            cd = c['delta']
+            vd = v['delta']
+            cd_s = f'{cd:>+7d}' if cd is not None else '    n/a'
+            vd_s = f'{vd:>+7d}' if vd is not None else '    n/a'
+            selected = idx == cur.index
+            marker = '>' if selected else ' '
+            base = 0
+            self._put(7 + i, 3, f'{marker} {row["repo"][:name_w]:<{name_w}}',
+                      curses.color_pair(5) if selected else 0)
+            self._put(7 + i, 3 + 2 + name_w,
+                      f' {spark:<{spark_w}} {_compact_num(c["cur"]):>6} ', 0)
+            x = 3 + 2 + name_w + 1 + spark_w + 1 + 6 + 1
+            self._put(7 + i, x, cd_s,
+                      base if idx == cur.index else self._delta_color(cd))
+            self._put(7 + i, x + 8, f'{c["rate"]:>6.1f}', base or self.curses.A_DIM)
+            self._put(7 + i, x + 16, f'{_compact_num(v["cur"]):>6}', base)
+            self._put(7 + i, x + 23, vd_s,
+                      base if idx == cur.index else self._delta_color(vd))
+            po, pm = row['prs']['opened'], row['prs']['merged']
+            self._put(7 + i, x + 31,
+                      f'{po:>4}{pm:>4}',
+                      base or (curses.color_pair(1) if pm else self.curses.A_DIM))
+            self._mark_selected(7 + i, max_x, selected)
+        self._scrollbar(7, page, len(rows), cur.scroll, max_x)
+        self.scroll_indicator(2, max_x, len(rows), page)
+
+    def _delta_color(self, value):
+        curses = self.curses
+        if value is None:
+            return self.curses.A_DIM
+        if value > 0:
+            return curses.color_pair(1)
+        if value < 0:
+            return curses.color_pair(4)
+        return self.curses.A_DIM
+
+    # 'material' is the default and the useful one. On a personal account
+    # most repos sit at zero for a fortnight, so a single clone scores an
+    # enormous |Z| and every one of them earns a row of one faint mark —
+    # twenty rows of noise around the six that matter.
+    ANOMALY_SEVERITIES = ('material', 'all', 'extreme', 'significant', 'minor')
+    SEVERITY_PAIR = {'extreme': 4, 'significant': 2, 'minor': 3}
+
+    # Severity leads, because ranking by breadth alone put a seven-repo
+    # wave of |Z|~11 above the four-repo release day that peaked at 81.6.
+    # Both orderings answer a real question, so both are a keypress away.
+    EVENT_SORT_KEYS = (
+        ('severity', lambda e: e['peak'], True),
+        ('repos', lambda e: len(e['repos']), True),
+        ('date', lambda e: e['day'], True),
+    )
+
+    def _anomaly_grid(self):
+        return self.data.anomalies(self.timeframe)
+
+    def _anomaly_events(self):
+        """[(day, repos)] — biggest first, all of them.
+
+        These were three fixed lines under the title, ranked by recency,
+        which silently dropped the largest event in the window. An account
+        event is the unit the operator actually acts on ("what did I ship
+        on the 30th, and what did it move"), so it gets a list of its own.
+        """
+        grid = self._anomaly_grid()
+        days = grid['days']
+        out = []
+        for day, repos in grid['campaigns'].items():
+            i = days.index(day) if day in days else -1
+            peak = 0.0
+            for repo, cells in grid['rows']:
+                if repo not in repos or i < 0 or i >= len(cells):
+                    continue
+                cell = cells[i]
+                if cell and cell['material']:
+                    peak = max(peak, abs(cell['z']))
+            out.append({'day': day, 'repos': repos, 'peak': peak,
+                        'severity': derive.severity(peak) or 'minor'})
+        name, key, natural = self.EVENT_SORT_KEYS[self.event_sort]
+        desc = natural != self.sort_flip.get('anomaly_events', False)
+        # Ties broken by the other two axes, so the order is total and the
+        # list does not reshuffle under the cursor between renders.
+        return sorted(out, key=lambda e: (key(e), len(e['repos']), e['day']),
+                      reverse=desc)
+
+    def _event_detail(self, day):
+        """Everything known about one account event: which repos moved, by
+        how much, and what shipped that day."""
+        grid = self._anomaly_grid()
+        if day not in grid['days']:
+            return None
+        i = grid['days'].index(day)
+        members = []
+        for repo, cells in grid['rows']:
+            cell = cells[i] if i < len(cells) else None
+            if not cell or not cell['material']:
                 continue
-            color = curses.color_pair(1) if sd > 0 else (curses.color_pair(4) if sd < 0 else 0)
-            self._put(6 + shown, 3, f'{name[:25]:<26}', 0)
-            self._put(6 + shown, 29, f'{sd:>+8d}', color)
-            self._put(6 + shown, 37, f'{fd:>+8d}', 0)
-            self._put(6 + shown, 45, f'{cd:>+9d}', curses.color_pair(2) if cd else self.curses.A_DIM)
-            self._put(6 + shown, 54, f'{vd:>+9d}', curses.color_pair(2) if vd else self.curses.A_DIM)
-            self._put(6 + shown, 63, f'{po:>8d}', curses.color_pair(3) if po else self.curses.A_DIM)
-            self._put(6 + shown, 71, f'{pm:>7d}', curses.color_pair(1) if pm else self.curses.A_DIM)
-            shown += 1
-            if shown >= avail - 4:
+            events = self.data.events(repo, [day])
+            members.append({
+                'repo': repo, 'cell': cell,
+                'releases': [tag for _d, tag in events['releases']],
+                'pushes': events['pushes'].get(day, 0),
+            })
+        members.sort(key=lambda m: -abs(m['cell']['z']))
+        return {'day': day, 'members': members,
+                'campaign': set(grid['campaigns'].get(day, ()))}
+
+    def _anomaly_rows(self, with_peaks=False):
+        """(repo, cells) rows, hottest first, after the severity filter.
+
+        Ordering by peak |z| is what makes this readable at all: the table
+        this replaced interleaved every repo's every anomalous day, so
+        finding the one repo that mattered meant reading several hundred
+        rows in no particular order.
+        """
+        grid = self._anomaly_grid()
+        want = self.ANOMALY_SEVERITIES[self.anomaly_filter]
+        rows = []
+        for repo, cells in grid['rows']:
+            if not self.in_scope(repo):
+                continue
+            kept = cells
+            if want not in ('all', 'material'):
+                kept = [c if (c and derive.severity(c['z']) == want) else None
+                        for c in cells]
+            material = [c for c in kept if c and c['material']]
+            if want == 'material':
+                if not material:
+                    continue
+                kept = [c if (c and c['material']) else None for c in kept]
+            peak = max((abs(c['z']) for c in kept if c), default=0.0)
+            if want not in ('all', 'material') and not peak:
+                continue
+            worst = max((c for c in kept if c), key=lambda c: abs(c['z']), default=None)
+            rows.append((repo, kept, peak, bool(material), worst))
+        if self.search:
+            needle = self.search.lower()
+            rows = [r for r in rows if needle in r[0].lower()]
+        rows.sort(key=lambda r: (-r[3], -r[2]))
+        if with_peaks:
+            return [(repo, cells, peak, worst) for repo, cells, peak, _m, worst in rows]
+        return [(repo, cells) for repo, cells, _p, _m, _w in rows]
+
+    def _render_anomaly_events(self, y, avail, max_x):
+        """The account-event pane: its own cursor, its own scroll, [space]
+        into a detail view. Ranked by how many repos moved together."""
+        curses = self.curses
+        events = self._anomaly_events()
+        focused = self.anomaly_pane == 0
+        if not events:
+            self._put(y, 3, 'No day where three or more repos moved together.',
+                      self.curses.A_DIM)
+            return y + 2
+        # Focus grows the pane but never past a third of the screen: the
+        # grid is the point of this view, and an events list that pushes it
+        # to "1-21/27" has answered a smaller question by hiding a bigger
+        # one.
+        cap = max(3, (avail - 6) // 3) if focused else 4
+        rows_shown = min(len(events), cap)
+        cur = self.cursors['anomaly_events'].clamp(len(events), rows_shown)
+        name, _k, natural = self.EVENT_SORT_KEYS[self.event_sort]
+        arrow = self.sort_arrow(natural != self.sort_flip.get('anomaly_events', False))
+        head = f'Account events ({len(events)})  [sort: {name} {arrow}]'
+        self._put(y, 1, head, curses.color_pair(3) | self.curses.A_BOLD)
+        if focused:
+            self._put(y, len(head) + 3, '[s]ort  [space] opens  [tab] to the grid',
+                      curses.color_pair(5))
+        else:
+            self._put(y, len(head) + 3, '[tab] to focus', self.curses.A_DIM)
+        y += 1
+        for i, ev in enumerate(events[cur.scroll:cur.scroll + rows_shown]):
+            if y >= avail:
                 break
+            day, repos = ev['day'], ev['repos']
+            idx = cur.scroll + i
+            selected = focused and idx == cur.index
+            marker = '>' if selected else ' '
+            more = ELLIPSIS if len(repos) > 5 else ''
+            # A block in the severity of the worst repo in the event, so the
+            # list can be read for "which of these mattered" without opening
+            # any of them.
+            self._put(y, 1, BLOCK,
+                      curses.color_pair(self.SEVERITY_PAIR[ev['severity']]))
+            self._put(y, 3, f'{marker} {_short_date(day)} {UP_MARK} {len(repos):>2} repos'
+                      f' {ev["peak"]:>6.1f}',
+                      curses.color_pair(5) if selected
+                      else curses.color_pair(3) | self.curses.A_BOLD)
+            self._put(y, 30, f'{EM_DASH} {", ".join(repos[:5])}{more}'[: max_x - 32],
+                      self.curses.A_DIM if not selected else 0)
+            if selected:
+                self._mark_selected(y, max_x, True)
+            y += 1
+        if len(events) > rows_shown:
+            self._scrollbar(y - rows_shown, rows_shown, len(events), cur.scroll, max_x)
+            self._put(y, 3, f'{len(events) - rows_shown} more '
+                      f'{"(tab, then j/k)" if not focused else "(j/k)"}',
+                      self.curses.A_DIM)
+            y += 1
+        return y + 2
+
+    def _render_event_detail(self, avail, max_x):
+        """One account event, in full: which repos moved, by how much, and
+        what shipped that day.
+
+        The question a spike raises is never "was there a spike" — it is
+        "what did I do on the 30th". This is the screen that answers it.
+        """
+        curses = self.curses
+        detail = self._event_detail(self.drilldown_event)
+        day = self.drilldown_event
+        self._put(2, 1, f' account event {_short_date(day)} ',
+                  curses.color_pair(5) | self.curses.A_BOLD)
+        self._put(2, max_x - 30, '[space/esc] back  [j/k] next',
+                  self.curses.A_DIM)
+        x = 1
+        for name, pair in (('extreme', 4), ('significant', 2), ('minor', 3)):
+            self._put(4, x, BLOCK, curses.color_pair(pair))
+            self._put(4, x + 2, name, self.curses.A_DIM)
+            x += len(name) + 5
+        if not detail or not detail['members']:
+            self._put(4, 3, 'Nothing material on this day in the selected window.',
+                      self.curses.A_DIM)
+            return
+        members = detail['members']
+        causes = [m for m in members if m['releases'] or m['pushes']]
+        has_events = bool((self.data.history or {}).get('events'))
+        cause_line = (f'{len(causes)} of them shipped something that day.'
+                      if has_events else
+                      'Release and push data was never collected for this store, '
+                      'so the cause column is blank rather than empty.')
+        self._put(3, 1, f'{len(members)} repo(s) departed from their own normal; '
+                  f'{cause_line}', self.curses.A_DIM)
+
+        name_w = min(28, max(12, max_x - 62))
+        self._put(6, 3, f'  {"repo":<{name_w}} {"metric":>7} {"dir":>6} {"Z":>8} '
+                  f'{"value":>8} {"median":>8}  cause',
+                  curses.color_pair(2) | self.curses.A_BOLD)
+        for i, m in enumerate(members[: avail - 8]):
+            cell = m['cell']
+            sev = derive.severity(cell['z']) or 'minor'
+            color = curses.color_pair(self.SEVERITY_PAIR.get(sev, 3))
+            self._put(8 + i, 1, BLOCK, color)
+            cause = ''
+            if m['releases']:
+                cause = 'release ' + ', '.join(m['releases'])
+            elif m['pushes']:
+                cause = f'{m["pushes"]} commit(s)'
+            self._put(8 + i, 3,
+                      f'  {m["repo"][:name_w]:<{name_w}} {cell["metric"]:>7} '
+                      f'{cell["dir"]:>6} {cell["z"]:>8.1f} {cell["value"]:>8} '
+                      f'{cell["median"]:>8.0f}  {cause}'[: max_x - 4], color)
+        y = 8 + min(len(members), avail - 8) + 1
+        if y < avail:
+            total = sum(m['cell']['value'] for m in members)
+            if causes:
+                tail = ''
+            elif has_events:
+                tail = ('  No release or push that day \u2014 this wave came from '
+                        'somewhere else.')
+            else:
+                tail = '  Run  catnip run  to start recording causes.'
+            self._put(y, 3, f'{total} events across {len(members)} repos on this day.'
+                      + tail, self.curses.A_DIM)
 
     def _render_anomaly_view(self, avail, max_x):
         curses = self.curses
-        severities = ('all', 'extreme', 'significant', 'minor')
-        title = f'Traffic Anomalies  [filter: {severities[self.anomaly_filter]}]'
-        self._put(2, 1, title, curses.color_pair(6) | self.curses.A_BOLD)
-        self._put(3, 1, 'Z = modified z-score vs the repo\'s median day (|Z|>3 extreme, '
-                  '>2 significant, >1 minor). Δ% = size of the jump.', self.curses.A_DIM)
-        scroll = self.scroll
-        if not self.data.anomaly_data:
-            self._put(5, 1, 'No anomaly data. Run  make traffic-anomaly  first.', self.curses.A_DIM)
+        grid = self._anomaly_grid()
+        rows = self._anomaly_rows(with_peaks=True)
+        days = grid['days']
+        campaigns = grid['campaigns']
+        sev = self.ANOMALY_SEVERITIES[self.anomaly_filter]
+        win = TF_LABEL.get(self.timeframe, 'window')
+        hidden = len(grid['rows']) - len(rows)
+        self._put(2, 1, f'Anomalies \u2014 repo x day  ({win})  [filter: {sev}]',
+                  curses.color_pair(6) | self.curses.A_BOLD)
+        self._put(3, 1, 'Cell = the day this repo departed from its own normal. '
+                  'C/V spike, c/v dip \u2014 clones or views. [?] for the formula.',
+                  self.curses.A_DIM)
+        x = 1
+        for name, pair in (('extreme', 4), ('significant', 2), ('minor', 3)):
+            self._put(4, x, BLOCK, curses.color_pair(pair))
+            self._put(4, x + 2, name, self.curses.A_DIM)
+            x += len(name) + 5
+        # The immaterial glyph needs naming wherever it can appear. It is
+        # not a severity — it is a day that is statistically extreme for a
+        # repo whose baseline is zero, and moving by one clone is not an
+        # event however large the z-score says it is.
+        gloss = (f'moved < {derive.Z_MIN_VALUE} from its median '
+                 f'(shown, never counted)')
+        self._put(4, x, ramp_glyph(0.3), self.curses.A_DIM)
+        self._put(4, x + 2, gloss, self.curses.A_DIM)
+        # Advance past the text that was actually written, not past a
+        # guess at its width: the guess put the hidden-repos note on top of
+        # the tail of this one ("...never co56 repo(s) with nothing...").
+        x += 2 + len(gloss) + 4
+        if hidden:
+            note = (f'{hidden} repo(s) with nothing material hidden '
+                    f'\u2014 [f] to show')
+            if x + len(note) < max_x - 1:
+                self._put(4, x, note, self.curses.A_DIM)
+            else:
+                self._put(5, 3, note, self.curses.A_DIM)
+
+        if not days:
+            self._put(6, 3, 'No daily store yet \u2014 run  catnip history  first.',
+                      self.curses.A_DIM)
             return
-        data = self._filtered_anomaly_data()
-        if not data:
-            self._put(5, 1, f'No {severities[self.anomaly_filter]} anomalies.', self.curses.A_DIM)
+        if not rows:
+            self._put(6, 3, f'No {sev} anomalies in this window.', self.curses.A_DIM)
             return
-        severity_colors = {
-            'extreme': curses.color_pair(4),
-            'significant': curses.color_pair(2),
-            'minor': curses.color_pair(3),
-        }
-        # Severity legend at the top (plan 13) — stays visible while scrolling.
-        self._put(4, 3, 'severity: ', self.curses.A_DIM)
-        self._put(4, 13, 'extreme', severity_colors['extreme'])
-        self._put(4, 22, 'significant', severity_colors['significant'])
-        self._put(4, 35, 'minor', severity_colors['minor'])
-        name_w = min(20, max(12, max_x - 60))
-        self._put(5, 3, f'  {"repo":<{name_w}} {"metric":>7} {"severity":<12} {"dir":>5} '
-                  f'{"Z":>7} {"date":>7} {"Δ%":>9}',
-                  curses.color_pair(2) | self.curses.A_BOLD)
-        shown = avail - 4
-        for i, row in enumerate(data[scroll:scroll + shown]):
-            name = row.get('repo_name', '')[:name_w]
-            metric = row.get('metric', '')
-            atype = row.get('anomaly_type', '')
-            direction = row.get('direction', '')
-            z = _float(row, 'modified_z')
-            dev = _float(row, 'deviation_pct')
-            when = _short_date(row.get('timestamp', ''))
-            c = severity_colors.get(atype, 0)
-            self._put(6 + i, 3, f'  {name:<{name_w}} {metric:>7} {atype:<12} {direction:>5} '
-                      f'{z:>7.2f} {when:>7} {dev:>+8.0f}%', c)
-        self.scroll_indicator(2, max_x, len(data), shown)
+
+        campaign_days = {day: set(repos) for day, repos in campaigns.items()}
+        # Blank rows between blocks. Legend, event heading, event rows, grid
+        # heading and grid rows were five kinds of line stacked with no
+        # separation, which reads as one wall rather than three tables.
+        y = self._render_anomaly_events(6, avail, max_x)
+
+        # Geometry. One character per day put fourteen columns in fourteen
+        # columns, which left room for two date labels out of fourteen and
+        # no way to tell which day a mark belonged to. Give each day as much
+        # width as the terminal allows, up to a full date, so the header
+        # sits over its own column.
+        name_w = min(22, max(10, max_x // 5))
+        peak_w = 13
+        grid_room = max_x - (3 + name_w + 1) - peak_w - 2
+        # A column is legible when it is as wide as its date. If every day
+        # fits at that width, show them all; otherwise show a window of
+        # them and scroll horizontally, rather than shrinking the columns
+        # until the labels have to be dropped.
+        LEGIBLE_W = 5
+        max_visible = max(1, grid_room // (LEGIBLE_W + 1))
+        if len(days) <= max_visible:
+            cell_w = max(1, min(LEGIBLE_W, grid_room // max(1, len(days)) - 1))
+            gap = 1 if cell_w * len(days) + len(days) <= grid_room else 0
+            day_offset, visible_days = 0, days
+        else:
+            cell_w, gap = LEGIBLE_W, 1
+            last = len(days) - max_visible
+            day_offset = (last if self.anomaly_day_offset is None
+                          else max(0, min(self.anomaly_day_offset, last)))
+            self.anomaly_day_offset = day_offset
+            visible_days = days[day_offset:day_offset + max_visible]
+        # The key handler has no terminal to measure, so record how wide the
+        # window turned out to be; without it, h/l clamp against the wrong
+        # bound and the grid appears not to scroll at all.
+        self._anomaly_visible = len(visible_days)
+
+        page = max(1, avail + 2 - y - 2)
+        cur = self.cursor('anomaly').clamp(len(rows), page)
+        self.scroll = cur.scroll
+        severity_pair = self.SEVERITY_PAIR
+
+        def cell_at(r, c):
+            cells = rows[r][1]
+            i = c + day_offset
+            return cells[i] if i < len(cells) else None
+
+        def glyph_for(value, r, c):
+            cell = cell_at(r, c)
+            if not cell:
+                return ' '
+            letter = 'c' if cell['metric'] == 'clones' else 'v'
+            if cell['dir'] == 'spike':
+                letter = letter.upper()
+            return letter if cell['material'] else ramp_glyph(0.3)
+
+        def attr_for(value, r, c):
+            cell = cell_at(r, c)
+            if not cell:
+                return 0
+            if not cell['material']:
+                return self.curses.A_DIM
+            i = c + day_offset
+            day = days[i] if i < len(days) else ''
+            if rows[r][0] in campaign_days.get(day, ()):  # folded into an event
+                return self.curses.A_DIM
+            pair = severity_pair.get(derive.severity(cell['z']) or '', 0)
+            return curses.color_pair(pair) if pair else 0
+
+        labels = [_short_date(d) for d in visible_days]
+        grid_rows = [(repo, [1.0 if cell else 0.0
+                             for cell in cells[day_offset:day_offset + len(visible_days)]])
+                     for repo, cells, _p, _w in rows]
+        end = heatmap(
+            self._put, self.curses, y, max_x - peak_w,
+            rows=grid_rows, col_labels=labels, label_w=name_w,
+            cell_w=cell_w, gap=gap, glyph_for=glyph_for, attr_for=attr_for,
+            header_attr=curses.color_pair(2), label_attr=0,
+            scroll=cur.scroll, height=page, header_gap=1,
+            cursor=cur.index, cursor_attr=curses.color_pair(5))
+        self._scrollbar(y + 2, page, len(rows), cur.scroll, max_x)
+
+        # A per-row summary, so a row still answers "how bad, and when"
+        # even when the terminal is too narrow for legible columns. It sits
+        # just past the last day rather than pinned to the right edge —
+        # thirty columns of gap between a mark and its magnitude makes the
+        # eye do work the layout should have done.
+        grid_end = 3 + name_w + 1 + len(visible_days) * (cell_w + gap)
+        px = min(max_x - peak_w, grid_end + 2)
+        self._put(y, px, 'peak |Z| day', curses.color_pair(2) | self.curses.A_BOLD)
+        for i, (_repo, _cells, peak, worst) in enumerate(rows[cur.scroll:cur.scroll + page]):
+            if not worst:
+                continue
+            pair = severity_pair.get(derive.severity(worst['z']) or '', 0)
+            attr = (curses.color_pair(5) if cur.scroll + i == cur.index
+                    else (curses.color_pair(pair) if pair else self.curses.A_DIM))
+            day = days[_cells.index(worst)] if worst in _cells else ''
+            self._put(y + 2 + i, px, f'{peak:>6.1f} {_short_date(day):>5}', attr)
+        self.scroll_indicator(2, max_x, len(rows), page)
+        if end <= avail + 1:
+            hint = ('[space] opens the selected repo; per-day detail lives '
+                    'there, not here.')
+            if len(visible_days) < len(days):
+                first, last_d = visible_days[0], visible_days[-1]
+                hint = (f'days {_short_date(first)}..{_short_date(last_d)} of '
+                        f'{len(days)}  [h/l or \u2190/\u2192 to scroll]   ' + hint)
+            self._put(end, 3, hint[: max_x - 5], self.curses.A_DIM)
 
     PROFILE_SORT_KEYS = (
-        ('score', lambda r: float(r.get('clone_intent_score', 0) or 0), True),
-        ('ratio', lambda r: float(r.get('clone_to_view_ratio', 0) or 0), True),
-        ('name', lambda r: r.get('repo_name', '').lower(), False),
+        ('score', lambda r: r['score'], True),
+        ('cloners', lambda r: r['uniq_cloners'], True),
+        ('name', lambda r: r['repo'].lower(), False),
     )
+
+    INTENT_COLORS = {'developer': 1, 'tooling': 3, 'reference': 6, 'low-signal': 0}
+
+    def _profile_rows(self):
+        label, key, natural = self.PROFILE_SORT_KEYS[self.profile_sort]
+        desc = self._sort_desc(natural)
+        rows = [r for r in self.data.intent(self.timeframe).values()
+                if self.in_scope(r['repo'])]
+        if self.profile_hide_low:
+            rows = [r for r in rows if r['label'] != 'low-signal']
+        if self.search:
+            needle = self.search.lower()
+            rows = [r for r in rows if needle in r['repo'].lower()]
+        # Ranked repos first, low-signal beneath: a repo with nine data
+        # points has not earned a place in the ordering, but hiding it
+        # outright invites the question of where it went.
+        rows.sort(key=key, reverse=desc)
+        return ([r for r in rows if r['label'] != 'low-signal']
+                + [r for r in rows if r['label'] == 'low-signal'])
 
     def _render_profile_view(self, avail, max_x):
         curses = self.curses
-        sort_label, sort_key, sort_desc = self.PROFILE_SORT_KEYS[self.profile_sort]
+        name, _key, natural = self.PROFILE_SORT_KEYS[self.profile_sort]
+        sort_label = f'{name} {self.sort_arrow(self._sort_desc(natural))}'
+        rows = self._profile_rows()
+        win = TF_LABEL.get(self.timeframe, 'window')
         low_tag = 'low hidden' if self.profile_hide_low else 'l=hide low'
-        title = f'Clone Intent Profiles  [sort: {sort_label}]  [{low_tag}]'
-        self._put(2, 1, title, curses.color_pair(6) | self.curses.A_BOLD)
-        self._put(3, 1, 'Score = clones/views x100 (0-200). Labels: developer >=50, '
-                  'tooling >=20, reference <20; low-signal = <10 total traffic.',
+        self._put(2, 1, f'Clone Intent  ({win})  [sort: {sort_label}]  [{low_tag}]',
+                  curses.color_pair(6) | self.curses.A_BOLD)
+        self._put(3, 1, 'score = (uniq_cloners + 1) / (uniq_visitors + 2) \u2014 smoothed '
+                  'clones per visitor, on UNIQUES. [?] for thresholds.',
                   self.curses.A_DIM)
-        scroll = self.scroll
-        data = self._filtered(self.data.profile_data)
-        if not data:
-            self._put(5, 1, 'No profile data. Run  make traffic-profile  first.', self.curses.A_DIM)
+        if not rows:
+            self._put(5, 3, 'No repo has traffic in this window.', self.curses.A_DIM)
             return
-        data = sorted(data, key=sort_key, reverse=sort_desc)
-        active = [r for r in data if r.get('intent_label') != 'low-signal']
-        low = [r for r in data if r.get('intent_label') == 'low-signal']
-        # Build a flat entry list with section dividers so scrolling still works.
-        entries = []                      # (kind, payload): 'div' str | 'row' dict
-        if active:
-            entries.append(('div', f'── active signal ({len(active)}) ──'))
-            entries += [('row', r) for r in active]
-        if low and not self.profile_hide_low:
-            entries.append(('div', f'── low signal ({len(low)}) ──'))
-            entries += [('row', r) for r in low]
-        intent_colors = {
-            'developer': curses.color_pair(1),
-            'tooling': curses.color_pair(3),
-            'reference': curses.color_pair(6),   # normal, no longer dim (plan 13)
-            'low-signal': curses.A_DIM,
-        }
-        name_w = min(20, max(12, max_x - 55))
-        bar_w = max(10, max_x - name_w - 36)
-        self._put(5, 3, f'  {"repo":<{name_w}} {"score":>6} {"intent":<12} {"c/v":>5}  bar',
+
+        name_w = min(24, max(12, max_x - 58))
+        bar_w = max(8, max_x - name_w - 48)
+        self._put(5, 3, f'  {"repo":<{name_w}} {"score":>7} {"intent":<11} '
+                  f'{"uc":>5}{"uv":>5}  bar',
                   curses.color_pair(2) | self.curses.A_BOLD)
-        shown = avail - 4
-        for i, (kind, payload) in enumerate(entries[scroll:scroll + shown]):
-            if kind == 'div':
-                self._put(6 + i, 3, payload, self.curses.A_DIM)
-                continue
-            row = payload
-            name = row.get('repo_name', '')[:name_w]
-            score = _float(row, 'clone_intent_score')
-            label = row.get('intent_label', '')
-            ratio = _float(row, 'clone_to_view_ratio')
-            c = intent_colors.get(label, 0)
-            bar = self._hbar(score, 200, bar_w)
-            self._put(6 + i, 3, f'  {name:<{name_w}} {score:>6.1f} [{label:<10}] {ratio:>5.2f}  {bar}', c)
-        self.scroll_indicator(2, max_x, len(entries), shown)
+        page = avail - 6
+        cur = self.cursor('profile').clamp(len(rows), page)
+        self.scroll = cur.scroll
+        # Scale bars to the ranked repos only; one fetcher fleet at 23.0
+        # would otherwise flatten every real repo to a single cell.
+        ranked = [r['score'] for r in rows if r['label'] != 'low-signal']
+        top = max(ranked[:1] or [1.0], default=1.0)
+        for i, row in enumerate(rows[cur.scroll:cur.scroll + page]):
+            idx = cur.scroll + i
+            pair = self.INTENT_COLORS.get(row['label'], 0)
+            color = curses.color_pair(pair) if pair else self.curses.A_DIM
+            selected = idx == cur.index
+            marker = '>' if selected else ' '
+            bar = self._hbar(min(row['score'], top), top, bar_w)
+            self._put(7 + i, 3, f'{marker} {row["repo"][:name_w]:<{name_w}}',
+                      curses.color_pair(5) if selected else color)
+            self._put(7 + i, 3 + 2 + name_w,
+                      f' {row["score"]:>7.3f} '
+                      f'{row["label"]:<11} {row["uniq_cloners"]:>5}'
+                      f'{row["uniq_visitors"]:>5}  {bar}', color)
+            if row['conflict']:
+                self._put(7 + i, max_x - 13, 'CONFLICT', curses.color_pair(4))
+            self._mark_selected(7 + i, max_x, selected)
+        self._scrollbar(7, page, len(rows), cur.scroll, max_x)
+        self.scroll_indicator(2, max_x, len(rows), page)
+        conflicts = sum(1 for r in rows if r['conflict'])
+        if conflicts and 8 + min(page, len(rows)) < avail + 2:
+            self._put(8 + min(page, len(rows)), 3,
+                      f'{conflicts} repo(s) score developer but classify as crawler '
+                      f'in the audience view \u2014 same clones, two readings.',
+                      curses.color_pair(4))
 
     @staticmethod
     def _corr_tier(r):
@@ -954,49 +2071,62 @@ class AnalyticsTUI(TuiApp):
         return 2
 
     def _render_correlation_view(self, avail, max_x):
+        """Residualized coupling, not raw Pearson.
+
+        Raw r over a fortnight of one account is dominated by release days
+        when everything moves together; those 0.99 rows were the launch
+        wave correlating with itself and implied no action whatsoever.
+        """
         curses = self.curses
-        self._put(2, 1, 'Cross-Repo Correlations', curses.color_pair(6) | self.curses.A_BOLD)
-        self._put(3, 1, "Pearson r of two repos' aligned daily clone series over the "
-                  "days both have data (n>=5). +1 move together, -1 opposite; lag = who leads.",
-                  self.curses.A_DIM)
-        # Strength-tier legend at top (plan 13) — stays visible while scrolling.
-        self._put(4, 3, 'strength:', self.curses.A_DIM)
-        self._put(4, 13, 'strong>=0.8', curses.color_pair(1))
-        self._put(4, 26, 'moderate 0.5-0.8', curses.color_pair(6))
-        self._put(4, 44, 'weak<0.5', self.curses.A_DIM)
-        scroll = self.scroll
-        data = self.data.correlation_data
-        if not data:
-            self._put(6, 1, 'No correlation data — needs >=2 repos sharing >=5 days of '
-                      'traffic. Run  make analyze  first.', self.curses.A_DIM)
+        result = self.data.coupled(self.timeframe)
+        win = TF_LABEL.get(self.timeframe, 'window')
+        self._put(2, 1, f'Coupled Repos \u2014 residualized  ({win})',
+                  curses.color_pair(6) | self.curses.A_BOLD)
+        self._put(3, 1, 'Pearson r AFTER removing each repo\'s expected share of the '
+                  'account\'s daily total. [?] explains why.', self.curses.A_DIM)
+        if result['reason']:
+            self._put(5, 3, result['reason'].capitalize() + '.', self.curses.A_DIM)
             return
-        # Tier first (strong > moderate > weak), then |r| desc within tier —
-        # weak/"white" pairs always sink to the bottom (plan 13).
-        data = sorted(data, key=lambda r: (self._corr_tier(_float(r, 'clone_clone_corr')),
-                                           -abs(_float(r, 'clone_clone_corr'))))
-        name_w = min(18, max(10, (max_x - 64) // 2))
+        pairs = result['pairs']
+        if not pairs:
+            self._put(5, 3, 'No pair moves together once the account-wide wave is '
+                      'removed.', self.curses.A_DIM)
+            return
+        lag_note = ('lag available' if result['lag_available'] else
+                    f'lag suppressed \u2014 needs {derive.LAG_MIN_DAYS} aligned days, '
+                    f'have {len(result["days"])}')
+        self._put(4, 3, lag_note, self.curses.A_DIM)
+
+        name_w = min(20, max(10, (max_x - 40) // 2))
         self._put(5, 3, f'  {"repo A":<{name_w}}     {"repo B":<{name_w}} '
-                  f'{"r_clone":>8} {"r_view":>8} {"n":>4}  lag',
+                  f'{"resid r":>9} {"raw r":>8} {"n":>4}',
                   curses.color_pair(2) | self.curses.A_BOLD)
-        shown = avail - 4
-        for i, row in enumerate(data[scroll:scroll + shown]):
-            ra = row.get('repo_a', '')[:name_w]
-            rb = row.get('repo_b', '')[:name_w]
-            cc = _float(row, 'clone_clone_corr')
-            vc = _float(row, 'view_view_corr')
-            n = row.get('share_days', '') or row.get('both_active_days', '') or ''
-            lag = row.get('cross_lag_best', '0')
-            lag_dir = row.get('cross_lag_direction', '')
-            tier = self._corr_tier(cc)
+        page = avail - 6
+        for i, pair in enumerate(pairs[self.scroll:self.scroll + page]):
+            r = pair['r']
+            tier = self._corr_tier(r)
             if tier == 0:
-                c = curses.color_pair(1) if cc > 0 else curses.color_pair(4)
+                c = curses.color_pair(1) if r > 0 else curses.color_pair(4)
             elif tier == 1:
-                c = curses.color_pair(6) if cc > 0 else curses.color_pair(3)
+                c = curses.color_pair(6) if r > 0 else curses.color_pair(3)
             else:
                 c = self.curses.A_DIM
-            self._put(6 + i, 3,
-                      f'  {ra:<{name_w}} <-> {rb:<{name_w}} {cc:>8.3f} {vc:>8.3f} {str(n):>4}  {lag}({lag_dir})', c)
-        self.scroll_indicator(2, max_x, len(data), shown)
+            self._put(7 + i, 3,
+                      f'  {pair["a"][:name_w]:<{name_w}} <-> {pair["b"][:name_w]:<{name_w}} '
+                      f'{r:>9.3f} {pair["raw_r"]:>8.3f} {pair["n"]:>4}', c)
+        self._scrollbar(7, page, len(pairs), self.scroll, max_x)
+        self.scroll_indicator(2, max_x, len(pairs), page)
+
+    # Category -> a label that fits a narrow column and still reads. The
+    # heatmap truncated the real names to four characters ('traf', 'dir_',
+    # 'pr_l', 'pr_d'), which is not a header, it is a puzzle.
+    FUNNEL_LABELS = {
+        'overview': 'home', 'doc_blob': 'docs', 'code_blob': 'code',
+        'src_blob': 'src', 'dir_tree': 'tree', 'pr_detail': 'pr', 'pr_list': 'prs',
+        'issues': 'issu', 'discussions': 'disc', 'releases': 'rels',
+        'actions': 'acts', 'pulse': 'puls', 'traffic_graph': 'graf',
+        'forks': 'fork', 'other': 'othr',
+    }
 
     # category -> color pair (grouped by kind of content)
     FUNNEL_COLORS = {
@@ -1009,92 +2139,128 @@ class AnalyticsTUI(TuiApp):
         'pulse': 4, 'releases': 4,
     }
 
-    def _funnel_lines(self):
-        """(category_rows, path_rows) for the funnel view: per-category
-        aggregates first, top pages beneath (plan 08 phase 5)."""
-        data = self._filtered(self.data.funnel_data)
+    def _funnel_repo_rows(self):
+        """Per-repo funnel rows, deepest first, after the category filter."""
+        rows = [r for r in self.data.funnel_depth().values()
+                if self.in_scope(r['repo'])]
         cats = self._funnel_categories()
-        if self.funnel_filter > 0 and self.funnel_filter <= len(cats):
+        if 0 < self.funnel_filter <= len(cats):
             target = cats[self.funnel_filter - 1]
-            data = [r for r in data if r.get('category') == target]
-        agg = {}
-        for row in data:
-            cat = row.get('category', '') or 'other'
-            a = agg.setdefault(cat, {'views': 0, 'pages': 0, 'top': ('', 0)})
-            views = _int(row, 'view_count')
-            a['views'] += views
-            a['pages'] += 1
-            if views > a['top'][1]:
-                a['top'] = ((row.get('title') or row.get('path') or ''), views)
-        cat_rows = sorted(agg.items(), key=lambda kv: -kv[1]['views'])
-        path_rows = sorted(data, key=lambda r: _int(r, 'view_count'), reverse=True)
-        return cat_rows, path_rows
+            rows = [r for r in rows if r['categories'].get(target)]
+        if self.search:
+            needle = self.search.lower()
+            rows = [r for r in rows if needle in r['repo'].lower()]
+        return sorted(rows, key=lambda r: (-r['depth_ratio'], -r['total']))
 
     def _render_funnel_view(self, avail, max_x):
+        """Content mix as a row-normalized heatmap, plus a depth leaderboard.
+
+        The previous view mixed 98 repos into one set of category totals,
+        so a repo whose documentation outdraws its README 2:1 was invisible
+        inside the account-wide aggregate.
+        """
         curses = self.curses
         cats = self._funnel_categories()
-        filt = ('all' if self.funnel_filter == 0 or self.funnel_filter > len(cats)
+        filt = ('all' if not 0 < self.funnel_filter <= len(cats)
                 else cats[self.funnel_filter - 1])
-        self._put(2, 1, f'Content Engagement Funnel  [f]ilter: {filt}',
+        rows = self._funnel_repo_rows()
+        self._put(2, 1, f'Funnel \u2014 content mix and depth  [f]ilter: {filt}',
                   curses.color_pair(6) | self.curses.A_BOLD)
-        # Color legend
-        self._put(3, 1, 'legend:', self.curses.A_DIM)
-        legend = [('code', 1), ('docs', 3), ('PRs', 6), ('tree', 2),
-                  ('issues', 7), ('insights', 4), ('other', 0)]
-        x = 10
-        for name, pair in legend:
-            attr = curses.color_pair(pair) if pair else self.curses.A_DIM
-            self._put(3, x, '█', attr)
-            self._put(3, x + 1, name, self.curses.A_DIM)
-            x += len(name) + 3
-        cat_rows, path_rows = self._funnel_lines()
-        if not path_rows:
-            self._put(5, 1, 'No funnel data. Run  make traffic-funnel  first.', self.curses.A_DIM)
+        self._put(3, 1, 'Row = one repo, shaded by share of ITS OWN traffic per page '
+                  'category. depth = (docs+code+tree)/home; * = no home views at all. '
+                  'Rolling 14d ([?]).', self.curses.A_DIM)
+        if not rows:
+            self._put_lines(5, self._no_run_note('path data'), max_x)
             return
-        y = 5
-        max_cat = max((a['views'] for _, a in cat_rows), default=1) or 1
-        self._put(y, 3, f'{"category":<14} {"views":>7} {"pages":>6}  top page',
-                  curses.color_pair(2) | self.curses.A_BOLD)
-        y += 1
-        for cat, a in cat_rows:
-            if y >= 2 + avail - 3:
-                break
-            pair = self.FUNNEL_COLORS.get(cat, 0)
-            c = curses.color_pair(pair) if pair else self.curses.A_DIM
-            bar = self._hbar(a['views'], max_cat, 12)
-            top_page = a['top'][0][: max_x - 60]
-            self._put(y, 3, f'{cat:<14} {a["views"]:>7} {a["pages"]:>6}  {bar:<12} {top_page}', c)
-            y += 1
-        y += 1
-        name_w = min(18, max(10, (max_x - 70) // 2))
-        max_v = max((_int(r, 'view_count') for r in path_rows), default=1) or 1
-        self._put(y, 3, f'  {"repo":<{name_w}} {"category":<14} {"views":>6}  page',
-                  curses.color_pair(2) | self.curses.A_BOLD)
-        y += 1
-        title_w = max(0, max_x - (5 + name_w + 1 + 14 + 1 + 6 + 2 + 12))
-        scroll = self.scroll
-        shown = max(0, 2 + avail - y)
-        for i, row in enumerate(path_rows[scroll:scroll + shown]):
-            name = row.get('repo_name', '')[:name_w]
-            cat = row.get('category', '')
-            views = _int(row, 'view_count')
-            title = (row.get('title') or row.get('path') or '')[:title_w]
-            pair = self.FUNNEL_COLORS.get(cat, 0)
-            c = curses.color_pair(pair) if pair else self.curses.A_DIM
-            bar = self._hbar(views, max_v, 10)
-            self._put(y + i, 3, f'  {name:<{name_w}} {cat:<14} {views:>6}  {bar:<10} {title}', c)
-        self.scroll_indicator(2, max_x, len(path_rows), shown)
 
-    def _render_history_view(self, avail, max_x):
+        # Columns are the categories that actually carry traffic, biggest
+        # first — the long tail of empty ones is noise in a grid.
+        totals = defaultdict(int)
+        for row in rows:
+            for cat, n in row['categories'].items():
+                totals[cat] += n
+        columns = [c for c, _n in sorted(totals.items(), key=lambda kv: -kv[1])][:10]
+        name_w = min(22, max(10, max_x - 4 * len(columns) - 30))
+
+        self._put(5, 3 + name_w + 1 + 5 * len(columns) + 2, 'depth   views',
+                  curses.color_pair(2) | self.curses.A_BOLD)
+        page = max(1, avail - 6)
+        cur = self.cursor('funnel').clamp(len(rows), page)
+        self.scroll = cur.scroll
+
+        def attr_for(value, r, c):
+            # Colour by category only. Inverting a whole row of the grid to
+            # show the selection made that row's cells unreadable, which is
+            # the one thing the grid is for; heatmap highlights the row
+            # LABEL, and the right edge carries the marker.
+            cat = columns[c] if c < len(columns) else ''
+            pair = self.FUNNEL_COLORS.get(cat, 0)
+            return curses.color_pair(pair) if pair else 0
+
+        # Row-normalized: each repo's mix is comparable to every other's
+        # even when its volume is not, which is the whole point of a grid
+        # rather than a stack of bars.
+        grid_rows = []
+        for row in rows:
+            peak = max((row['categories'].get(c, 0) for c in columns), default=0) or 1
+            grid_rows.append((row['repo'][:name_w],
+                              [row['categories'].get(c, 0) / peak for c in columns]))
+        end_row = heatmap(
+            self._put, self.curses, 5, max_x,
+            rows=grid_rows,
+            col_labels=[self.FUNNEL_LABELS.get(c, c[:4]) for c in columns],
+            label_w=name_w, cell_w=4, gap=1, attr_for=attr_for,
+            header_attr=curses.color_pair(2), header_gap=1,
+            scroll=cur.scroll, height=page,
+            cursor=cur.index, cursor_attr=curses.color_pair(5))
+
+        num_x = 3 + name_w + 1 + 5 * len(columns) + 2
+        for i, row in enumerate(rows[cur.scroll:cur.scroll + page]):
+            idx = cur.scroll + i
+            deep = row['depth_ratio']
+            color = (curses.color_pair(1) if deep >= 1.0
+                     else curses.color_pair(3) if deep >= 0.5 else self.curses.A_DIM)
+            # No overview views at all means the ratio has no denominator.
+            # Printing 269.00 implies a measured 269:1; it is really "all
+            # of this repo's traffic went past a front door nobody used".
+            shown = ('  n/a' if not row['front'] and not row['deep']
+                     else f'{deep:>5.2f}' if row['front'] else f'{row["deep"]:>4}*')
+            self._put(7 + i, num_x, f'{shown:>5}  {_compact_num(row["total"]):>6}',
+                      curses.color_pair(5) if idx == cur.index else color)
+            self._mark_selected(7 + i, max_x, idx == cur.index)
+        self._scrollbar(7, page, len(rows), cur.scroll, max_x)
+        self.scroll_indicator(2, max_x, len(rows), page)
+        if end_row <= avail + 1:
+            legend_x = 3
+            for cat in columns:
+                pair = self.FUNNEL_COLORS.get(cat, 0)
+                text = f'{self.FUNNEL_LABELS.get(cat, cat[:4])}={cat}'
+                if legend_x + len(text) + 3 > max_x - 2:
+                    break
+                self._put(end_row, legend_x, BLOCK,
+                          curses.color_pair(pair) if pair else self.curses.A_DIM)
+                self._put(end_row, legend_x + 2, text, self.curses.A_DIM)
+                legend_x += len(text) + 5
+
+    def _render_epoch_view(self, avail, max_x):
+        """The traffic view at the 'epoch' timeframe: the whole store.
+
+        This was a separate view ('history') that duplicated the traffic
+        screen with a longer window. Folding it onto the end of the t/T
+        cycle removes the duplication and answers the question it always
+        raised — "is this the same data as view 1?" — by making it
+        literally the same view, one stop further out.
+        """
         curses = self.curses
         clones = self.data.history_series('clones')
         views = self.data.history_series('views')
         coverage = self.data.history.get('coverage', [])
         cov = '  '.join(f'{a}→{b}' for a, b in coverage) if coverage else 'n/a'
-        self._put(2, 1, f'History Store  (coverage: {cov})',
+        self._put(2, 1, f'Traffic — store epoch  (coverage: {cov})',
                   curses.color_pair(6) | self.curses.A_BOLD)
         if not clones and not views:
-            self._put(4, 3, 'No history store yet. Run  make history  first.', self.curses.A_DIM)
+            self._put(4, 3, 'No history store yet. Run  catnip history  first.',
+                      self.curses.A_DIM)
             return
         # Full store, not a trailing slice — the chart bins adjacent days when
         # the window outgrows the terminal, so "since store epoch" is honest.
@@ -1151,51 +2317,397 @@ class AnalyticsTUI(TuiApp):
             self._put(y, 1, f'Δ vs prev month: {_sparkline(deltas)}   net {net:+d}',
                       self.curses.A_DIM)
 
+    # ---- the drilldown -------------------------------------------------
+
+    def _chart_series(self, days, values):
+        return [{'label': _short_date(d), 'count': v} for d, v in zip(days, values, strict=False)]
+
+    def _render_drilldown(self, avail, max_x):
+        """One repo, every derived series, on one screen.
+
+        The primitive the other views launch into. Reading a single repo
+        used to mean cross-referencing four screens that each interleaved
+        all 98 of them; every table row is now a door.
+        """
+        curses = self.curses
+        repo = self.drilldown
+        data = self.data
+        tf = self.timeframe
+        days = data.window_days(tf)
+        win = TF_LABEL.get(tf, 'window')
+        last = avail + 1
+
+        aud = data.audience(tf).get(repo) or {}
+        ins = data.intent(tf).get(repo) or {}
+        events = data.events(repo, days)
+        grid = data.anomalies(tf)
+        cells = dict(grid['rows']).get(repo) or [None] * len(days)
+
+        label = aud.get('label') or 'no traffic'
+        pair = self.AUDIENCE_COLORS.get(label, 0)
+        note = ''
+        if label == 'low-signal':
+            note = (f'  ({aud.get("signal", 0)} unique cloners+visitors, '
+                    f'need {derive.AUDIENCE_MIN_SIGNAL} to classify)')
+        self._put(2, 1, f' {repo} ', curses.color_pair(5) | self.curses.A_BOLD)
+        self._put(2, len(repo) + 4, f'{win}   [{label}]{note}',
+                  curses.color_pair(pair) if pair else self.curses.A_DIM)
+        self._put(2, max_x - 36, '[space/esc] back  [j/k] next repo',
+                  self.curses.A_DIM)
+
+        if not days:
+            self._put(4, 3, 'No daily store yet — run  catnip history  first.',
+                      self.curses.A_DIM)
+            return
+
+        clones = derive.series(data.history, repo, 'clones', days)
+        views = derive.series(data.history, repo, 'views', days)
+
+        # Anomaly markers ride the chart's own `peak` support, so the ▲ is
+        # positioned by the drawing layer and cannot drift off its bar.
+        # clip_ratio matters here for a reason that is easy to miss: the
+        # marker is drawn on the row ABOVE the bar, so on the tallest bar —
+        # which is usually the anomaly — there is no row for it and it
+        # silently disappears. Clipping caps the axis at a robust bound,
+        # and the over-cap bar then carries "▲421↑" on the top row instead.
+        marked = {i for i, c in enumerate(cells)
+                  if c and c['material'] and abs(c['z']) >= derive.Z_SIGNIFICANT}
+        view_series = self._chart_series(days, views)
+        clone_series = self._chart_series(days, clones)
+        for i in marked:
+            metric = cells[i]['metric']
+            (clone_series if metric == 'clones' else view_series)[i]['peak'] = True
+
+        # A chart drawn at row `top` with height h consumes h + 3 rows:
+        # its title, h rows of bars, the axis, and its own x-label row.
+        # Sizing against "whatever is left" without reserving that last row
+        # is precisely how the old history view printed month labels onto
+        # the footer, so the budget is computed up front and the charts are
+        # dropped \u2014 not squashed \u2014 when they do not fit.
+        MIN_PLOT_H = 3
+        y = 4
+        # The annotation strip under the clones chart needs its own row (two
+        # when the legend does not fit beside the y-axis), reserved here
+        # rather than discovered after the charts have taken the space.
+        strip = 2 if (events['releases'] or events['pushes'] or marked) else 0
+        # Three section breaks below the charts (uniques, funnel, activity).
+        room = last - y - strip - 3
+        plot_h = min(6, (room - 6) // 2)
+        if plot_h >= MIN_PLOT_H:
+            y = bar_chart(
+                self._put, curses, y, view_series, plot_h, max_x,
+                title=f'Daily Views ({win}: {_compact_num(sum(views))})',
+                title_attr=curses.color_pair(6) | curses.A_BOLD,
+                axis_attr=curses.color_pair(6), color=curses.color_pair(2),
+                peak_attr=curses.color_pair(4) | curses.A_BOLD,
+                max_bar_w=6, value_labels=True, label_fit=True, bin_unit='d',
+                clip_ratio=6)
+            geo = {}
+            y = bar_chart(
+                self._put, curses, y, clone_series, plot_h, max_x,
+                title=f'Daily Clones ({win}: {_compact_num(sum(clones))})',
+                title_attr=curses.color_pair(6) | curses.A_BOLD,
+                axis_attr=curses.color_pair(6), color=curses.color_pair(1),
+                peak_attr=curses.color_pair(4) | curses.A_BOLD,
+                max_bar_w=6, value_labels=True, label_fit=True, bin_unit='d',
+                clip_ratio=6, geometry=geo)
+            y = self._render_annotation_strip(y, geo, days, events, marked, max_x)
+        else:
+            # Too short for charts. Sparklines still carry the shape, and
+            # the day of the peak is what the charts were mostly being read
+            # for anyway.
+            peak_day = days[views.index(max(views))] if any(views) else '-'
+            self._put(y, 1, f'views  {_sparkline(views)}  {_compact_num(sum(views))}'
+                      f'  peak {peak_day}', curses.color_pair(2))
+            peak_day = days[clones.index(max(clones))] if any(clones) else '-'
+            self._put(y + 1, 1, f'clones {_sparkline(clones)}  {_compact_num(sum(clones))}'
+                      f'  peak {peak_day}', curses.color_pair(1))
+            y += 2
+
+        # Uniques track. Sparklines rather than a third chart: the shape
+        # is what matters here, and two more axes would cost the funnel.
+        uc = derive.series(data.history, repo, 'clones', days, derive.UNIQ)
+        uv = derive.series(data.history, repo, 'views', days, derive.UNIQ)
+        y += 1  # section break
+        if y < last:
+            self._put(y, 1, 'Uniques', curses.color_pair(6) | self.curses.A_BOLD)
+            y += 1
+        # Two fixed columns, each sparkline trimmed to the width that is
+        # actually there. At the epoch timeframe these series are 54 days
+        # long; laying them out against len(series) ran the second total
+        # off the right edge of the terminal.
+        spark_w = max(8, min(40, (max_x - 46) // 2))
+        for label, values, color in (('uniq cloners ', uc, curses.color_pair(1)),
+                                     ('uniq visitors', uv, curses.color_pair(2))):
+            if y >= last:
+                break
+            self._put(y, 3, f'{label} {_sparkline(values[-spark_w:]):<{spark_w}} '
+                      f'{sum(values):>6}  (peak {max(values) if values else 0}/day)',
+                      color)
+            y += 1
+        if y < last and aud:
+            ratio_note = (f'ratio {aud["ratio"]:.2f} c/v   score {aud["score"]:.2f}   '
+                          f'intent {ins.get("score", 0):.2f} [{ins.get("label", "?")}]')
+            if ins.get('conflict'):
+                ratio_note += '   CONFLICT: developer score, crawler audience'
+            self._put(y, 3, ratio_note,
+                      curses.color_pair(4) if ins.get('conflict') else self.curses.A_DIM)
+            y += 1
+
+        y = self._render_drilldown_funnel(y + 1, last, max_x, repo)
+        self._render_drilldown_activity(y + 1, last, max_x, repo, days, events)
+
+    def _render_annotation_strip(self, y, geo, days, events, marked, max_x):
+        """One row under the chart carrying what happened and why.
+
+        Anomaly days and their causes share a strip rather than riding the
+        bars, because the bar that most needs a marker is the tallest one
+        and the drawing layer has no row above it to put the marker on —
+        the ▲ was silently dropped from exactly the spike it existed to
+        annotate, while the legend went on claiming it was there.
+
+        Geometry comes back from the chart itself, so a mark stays under
+        its own bar even when a long window has been binned to fit.
+        """
+        curses = self.curses
+        if not geo.get('n'):
+            return y
+        binned = max(1, geo.get('binned', 1))
+        marks = {}
+        for i in sorted(marked):
+            if i < len(days):
+                marks[i // binned] = (UP_MARK, curses.color_pair(4) | curses.A_BOLD)
+        for day, _tag in events['releases']:
+            if day in days:
+                marks[days.index(day) // binned] = ('R', curses.color_pair(3))
+        for day in events['pushes']:
+            if day in days:
+                i = days.index(day) // binned
+                marks.setdefault(i, ('|', self.curses.A_DIM))
+        if not marks:
+            return y
+        row = max(y, geo['label_row'] + 1)
+        for i, (glyph, attr) in marks.items():
+            if i < geo['n']:
+                self._put(row, geo['plot_x'] + i * geo['slot'], glyph, attr)
+        legend = []
+        if marked:
+            legend.append(f'{UP_MARK} |Z|>={derive.Z_SIGNIFICANT:.0f}')
+        if events['releases']:
+            legend.append(f'R release ({len(events["releases"])})')
+        if events['pushes']:
+            legend.append(f'| push ({len(events["pushes"])}d)')
+        # The legend goes beside the y-axis when it fits there and on its own
+        # row when it does not — never both, and never truncated to "▲ |Z|>",
+        # which is what clipping it into the axis gutter produced.
+        text = '  '.join(legend)
+        if len(text) <= geo['plot_x'] - 2:
+            self._put(row, 1, text, self.curses.A_DIM)
+            return row + 1
+        self._put(row + 1, 3, text, self.curses.A_DIM)
+        return row + 2
+
+    def _render_drilldown_funnel(self, y, last, max_x, repo):
+        curses = self.curses
+        row = self.data.funnel_depth().get(repo)
+        if y >= last:
+            return y
+        self._put(y, 1, 'Funnel (rolling 14d, not the selected window)',
+                  curses.color_pair(6) | self.curses.A_BOLD)
+        y += 1
+        if not row:
+            note = ('no run on disk, so no path data was collected'
+                    if self.data.store_only
+                    else 'this repo had no page views in the run\'s window')
+            self._put(y, 3, note, self.curses.A_DIM)
+            return y + 1
+        cats = sorted(row['categories'].items(), key=lambda kv: -kv[1])[:6]
+        peak = max((n for _c, n in cats), default=1) or 1
+        bar_w = max(6, min(24, max_x - 46))
+        for cat, n in cats:
+            if y >= last:
+                return y
+            pair = self.FUNNEL_COLORS.get(cat, 0)
+            self._put(y, 3, f'{cat[:14]:<14} {self._hbar(n, peak, bar_w):<{bar_w}} {n:>6}',
+                      curses.color_pair(pair) if pair else self.curses.A_DIM)
+            y += 1
+        if y < last:
+            deep = row['depth_ratio']
+            color = (curses.color_pair(1) if deep >= 1.0
+                     else curses.color_pair(3) if deep >= 0.5 else self.curses.A_DIM)
+            self._put(y, 3, f'depth {deep:.2f}  ({row["deep"]} past the front door / '
+                      f'{row["front"]} overview)', color)
+            y += 1
+        return y
+
+    def _render_drilldown_activity(self, y, last, max_x, repo, days, events):
+        """PRs, releases and pushes — with 'not collected' kept distinct
+        from 'zero'.
+
+        `commit-days 0` is a measurement; `commit-days —` is the absence of
+        one. Printing 0 for both invites exactly the question it should be
+        answering: an operator reading "0 commits" on a repo they pushed to
+        last week has been told something false, not something empty.
+        """
+        curses = self.curses
+        if y >= last:
+            return
+        self._put(y, 1, 'Activity', curses.color_pair(6) | self.curses.A_BOLD)
+        y += 1
+        if y >= last:
+            return
+        has_events = bool((self.data.history or {}).get('events'))
+        has_prs = bool(self.data.prs) or not self.data.store_only
+        prs = self._windowed_pr_counts().get(repo, {'opened': 0, 'merged': 0})
+        pr_txt = (f'PRs opened {prs["opened"]}   merged {prs["merged"]}'
+                  if has_prs else 'PRs not collected')
+        if has_events:
+            commits = sum(events['pushes'].values())
+            rels = ', '.join(tag for _day, tag in events['releases']) or 'none'
+            ev_txt = (f'commit-days {len(events["pushes"])} ({commits} commits)   '
+                      f'releases: {rels}')
+        else:
+            ev_txt = 'commits/releases not collected (store predates the event log)'
+        self._put(y, 3, f'{pr_txt}   {ev_txt}'[: max_x - 5],
+                  0 if (has_events and has_prs) else self.curses.A_DIM)
+        y += 1
+        if not (has_events and has_prs) and y < last:
+            self._put(y, 3, 'run  catnip run  to start collecting these',
+                      self.curses.A_DIM)
+            y += 1
+        coupled = derive.coupled_for(self.data.history, self.timeframe, repo)
+        if y < last:
+            if coupled:
+                pairs = '   '.join(f'{c["repo"][:18]} (r={c["r"]:+.2f})' for c in coupled)
+                self._put(y, 3, f'coupled: {pairs}'[: max_x - 5], self.curses.A_DIM)
+            else:
+                self._put(y, 3, 'coupled: nothing survives residualization in this window',
+                          self.curses.A_DIM)
+
     def _render_footer(self, max_y, max_x):
         curses = self.curses
         active = curses.color_pair(5)
         dim = self.curses.A_DIM
-        x = 1
-        items = [
-            ('[q]uit', dim),
-            ('[r]eload', dim),
-            ('[1-9,0,-,=]view', dim),
-            (f'[t/T]tf:{self.timeframe}', active if self.timeframe != '2w' else dim),
-            ('[v/V]cycle', dim),
-            ('[j/k g/G]scroll', dim),
-            (f'[/]{self.search or "search"}', active if self.search else dim),
-        ]
-        if self.view == 'anomaly':
-            severities = ('all', 'extreme', 'significant', 'minor')
-            items.append((f'[f]ilter:{severities[self.anomaly_filter]}', active))
-        elif self.view == 'profile':
-            items.append((f'[s]ort:{self.PROFILE_SORT_KEYS[self.profile_sort][0]}', active))
+        if self.overlay:
+            self.render_footer_items(max_y, [('[?]/[esc] close derivation', active)], x=1)
+            return
+        if self.drilldown_event:
+            self.render_footer_items(max_y, [
+                ('[space/esc]back', dim),
+                ('[j/k]next event', dim),
+                (f'[t/T]tf:{self.timeframe}', active if self.timeframe != '2w' else dim),
+                ('[?]derivation', dim),
+                ('[Q]uit', dim),
+            ], x=1)
+            return
+        if self.drilldown:
+            self.render_footer_items(max_y, [
+                ('[space/esc]back', dim),
+                ('[j/k]next repo', dim),
+                (f'[t/T]tf:{self.timeframe}', active if self.timeframe != '2w' else dim),
+                ('[?]derivation', dim),
+                ('[r]eload', dim),
+                ('[Q]uit', dim),
+            ], x=1)
+            return
+        # Only the keys that do something on THIS screen, in THIS state.
+        # A footer offering [enter]repo over an empty list, or [f]ilter when
+        # there is one category, is not a legend — it is a set of small
+        # lies the operator has to test one at a time.
+        rows = self._cursor_rows() if self.view in REPO_ROW_VIEWS else []
+        scrollable = bool(rows) or self._scroll_bound() > 1
+        tf_applies = self.view != 'funnel'
+        items = [('[q]uit', dim), ('[r]eload', dim), ('[1-9,0]view', dim)]
+        if tf_applies:
+            items.append((f'[t/T]tf:{self.timeframe}',
+                          active if self.timeframe != '2w' else dim))
+        else:
+            items.append((f'[t/T]tf:{self.timeframe} n/a here', dim))
+        items.append(('[v/V]cycle', dim))
+        if scrollable:
+            items.append(('[j/k g/G]move', dim))
+        if rows or self.search:
+            items.append((f'[/]{self.search or "search"}',
+                          active if self.search else dim))
+        items.append(('[?]why', dim))
+        if self.data.knows_forks():
+            items.append((f'[o]{self.scope_label()}',
+                          active if self.scope_label() != 'all' else dim))
+        if rows:
+            items.append(('[space]repo', active))
+        if self.view == 'anomaly' and self.data.anomalies(self.timeframe)['days']:
+            items.append((f'[f]ilter:{self.ANOMALY_SEVERITIES[self.anomaly_filter]}',
+                          active))
+            if self._anomaly_events():
+                items.append(('[tab]events' if self.anomaly_pane else '[tab]grid',
+                              active))
+                if self.anomaly_pane == 0:
+                    name, _k, natural = self.EVENT_SORT_KEYS[self.event_sort]
+                    flipped = self.sort_flip.get('anomaly_events', False)
+                    items.append((f'[s]ort:{name}{self.sort_arrow(natural != flipped)}',
+                                  active))
+                    items.append(('[S]flip', dim))
+        elif self.view == 'profile' and rows:
+            items.append((f'[s]ort:{self._footer_sort()}', active))
+            items.append(('[S]flip', dim))
             items.append(('[l]ow:hidden' if self.profile_hide_low else '[l]ow:shown', active))
-        elif self.view == 'top':
-            items.append((f'[s]criterion:{self._active_criterion()}', active))
-        elif self.view == 'table':
-            items.append((f'[s]ort:{self.TABLE_SORT_KEYS[self.table_sort][0]}', active))
-            items.append((f'[f]ilter:{self.TABLE_STATUS[self.table_status]}', active))
-        self.render_footer_items(max_y, items, x=x)
+        elif self.view == 'audience' and rows:
+            items.append((f'[s]ort:{self._footer_sort()}', active))
+            items.append(('[S]flip', dim))
+            items.append(('[l]ow:hidden' if self.audience_hide_low else '[l]ow:shown',
+                          active))
+        elif self.view == 'deltas' and rows:
+            items.append(('[z]zero:hidden' if self.deltas_hide_zero else '[z]zero:shown',
+                          active))
+        elif self.view == 'table' and rows:
+            items.append((f'[s]ort:{self._footer_sort()}', active))
+            items.append(('[S]flip', dim))
+            statuses = self._table_statuses()
+            if len(statuses) > 1:
+                items.append((f'[f]ilter:{self._table_status()}', active))
+        elif self.view == 'funnel' and rows:
+            cats = self._funnel_categories()
+            if len(cats) > 1:
+                filt = ('all' if not 0 < self.funnel_filter <= len(cats)
+                        else cats[self.funnel_filter - 1])
+                items.append((f'[f]ilter:{filt}', active))
+        elif self.view == 'traffic' and rows:
+            items.append(('[tab]list', active))
+        self.render_footer_items(max_y, items, x=1)
 
 
 # ---- text mode ---------------------------------------------------------------
 
 def render_text_view(data, view, timeframe='2w'):
-    """Print one view as a plain table (plan 08 phase 6)."""
-    if view == 'top':
-        crits = {}
-        for r in data.top_repos_csv:
-            crits.setdefault(r.get('sort_criteria', ''), []).append(r)
-        for crit, rows in crits.items():
-            print(f'== {crit} ==')
-            for r in rows[:15]:
-                print(f"  {r.get('rank', ''):>3}  {r.get('repo_name', ''):<30} {r.get('value', '')}")
+    """Print one view as a plain table.
+
+    The agent-facing surface. It reads the same derive functions the TUI
+    does, so `catnip view deltas` and the deltas screen cannot disagree
+    about a number — the alternative is two implementations of the same
+    formula and a support question about which one is right.
+    """
+    if view == 'audience':
+        rows = sorted(data.audience(timeframe).values(), key=lambda r: r['score'])
+        print(f'{"repo":<30} {"score":>6} {"class":<9} {"ratio":>8} {"burst":>6} '
+              f'{"depth":>7} {"refs":>5}')
+        for r in rows:
+            burst = f'{r["burst"]:.2f}' if r['burst'] is not None else '-'
+            depth = f'{r["depth"]:.1f}' if r['depth'] is not None else '-'
+            refs = r['referrer_diversity'] if r['referrer_diversity'] is not None else '-'
+            print(f'{r["repo"][:30]:<30} {r["score"]:>6.2f} {r["label"]:<9} '
+                  f'{r["ratio"]:>8.2f} {burst:>6} {depth:>7} {str(refs):>5}')
     elif view == 'table':
-        for r in sorted(data.repos, key=lambda r: -float(r.get('traffic_score', 0) or 0)):
-            print(f"  {r.get('repo_name', ''):<30} clones={_int(r, 'total_clones'):>6} "
-                  f"views={_int(r, 'total_views'):>6} score={r.get('traffic_score', '')} "
-                  f"[{r.get('status', '')}]")
+        deltas = data.deltas(timeframe)
+        audience = data.audience(timeframe)
+        depth = data.funnel_depth()
+        for name in sorted(deltas, key=lambda n: -(deltas[n]['clones']['cur'])):
+            d, a = deltas[name], audience.get(name) or {}
+            mom = d['clones']['delta']
+            print(f'  {name:<30} clones={d["clones"]["cur"]:>6} '
+                  f'views={d["views"]["cur"]:>6} '
+                  f'momentum={"n/a" if mom is None else f"{mom:+d}":>7} '
+                  f'audience={a.get("score", 0):.2f} '
+                  f'depth={(depth.get(name) or {}).get("depth_ratio", 0):.2f}')
     elif view == 'lang':
         for r in data.lang_dist:
             print(f"  {r.get('language', ''):<20} {_int(r, 'total_bytes'):>12,} "
@@ -1207,37 +2719,52 @@ def render_text_view(data, view, timeframe='2w'):
         for wl, c in sorted(by_week.items()):
             print(f'  {wl}  {c:>6,}')
     elif view == 'deltas':
-        for n, snap in sorted((data.totals.get('repo_snapshots') or {}).items(),
-                              key=lambda kv: -abs(kv[1].get('stars_delta', 0))):
-            if any(snap.get(k) for k in ('stars_delta', 'forks_delta', 'clones_delta', 'views_delta')):
-                print(f"  {n:<30} Δstars={snap.get('stars_delta', 0):>+4} "
-                      f"Δclones={snap.get('clones_delta', 0):>+5} Δviews={snap.get('views_delta', 0):>+5}")
+        rows = data.deltas(timeframe)
+        n = len(data.window_days(timeframe)) or 1
+        comparable = any(r['comparable'] for r in rows.values())
+        print(f'window {n}d, previous window '
+              f'{"available" if comparable else "not in the store yet"}')
+        for name, r in sorted(rows.items(),
+                              key=lambda kv: -abs(kv[1]['clones']['delta'] or 0)):
+            c, v = r['clones'], r['views']
+            cd = 'n/a' if c['delta'] is None else f'{c["delta"]:+d}'
+            vd = 'n/a' if v['delta'] is None else f'{v["delta"]:+d}'
+            print(f'  {name:<30} clones={c["cur"]:>6} d={cd:>7} rate={c["rate"]:>6.1f}/d  '
+                  f'views={v["cur"]:>6} d={vd:>7}')
     elif view == 'anomaly':
-        for r in data.anomaly_data:
-            print(f"  {r.get('repo_name', ''):<25} {r.get('metric', ''):>7} "
-                  f"{r.get('anomaly_type', ''):<12} z={r.get('modified_z', '')} {r.get('timestamp', '')[:10]}")
+        grid = data.anomalies(timeframe)
+        for day, repos in sorted(grid['campaigns'].items()):
+            print(f'  {day}  ACCOUNT EVENT: {len(repos)} repos — {", ".join(repos)}')
+        for repo, cells in grid['rows']:
+            for i, cell in enumerate(cells):
+                if cell and cell['material']:
+                    print(f'  {repo:<30} {grid["days"][i]} {cell["metric"]:>6} '
+                          f'{cell["dir"]:>5} z={cell["z"]:>8.2f} value={cell["value"]}')
     elif view == 'profile':
-        for r in data.profile_data:
-            print(f"  {r.get('repo_name', ''):<30} score={r.get('clone_intent_score', ''):>7} "
-                  f"[{r.get('intent_label', '')}]")
+        for r in sorted(data.intent(timeframe).values(), key=lambda r: -r['score']):
+            flag = '  CONFLICT' if r['conflict'] else ''
+            print(f'  {r["repo"]:<30} score={r["score"]:>8.3f} [{r["label"]}] '
+                  f'uc={r["uniq_cloners"]} uv={r["uniq_visitors"]}{flag}')
     elif view == 'correlation':
-        for r in data.correlation_data[:50]:
-            print(f"  {r.get('repo_a', ''):<25} <-> {r.get('repo_b', ''):<25} "
-                  f"r_clone={r.get('clone_clone_corr', '')}")
+        result = data.coupled(timeframe)
+        if result['reason']:
+            print(f'  {result["reason"]}')
+        else:
+            print(f'  residualized; lag '
+                  f'{"available" if result["lag_available"] else "suppressed"} '
+                  f'(n={len(result["days"])})')
+            for p in result['pairs'][:50]:
+                print(f'  {p["a"]:<25} <-> {p["b"]:<25} r={p["r"]:>7.3f} '
+                      f'(raw {p["raw_r"]:>7.3f})')
     elif view == 'funnel':
-        agg = defaultdict(lambda: {'views': 0, 'pages': 0})
-        for r in data.funnel_data:
-            cat = r.get('category', '') or 'other'
-            agg[cat]['views'] += _int(r, 'view_count')
-            agg[cat]['pages'] += 1
-        for cat, a in sorted(agg.items(), key=lambda kv: -kv[1]['views']):
-            print(f"  {cat:<16} views={a['views']:>7,} pages={a['pages']:>5}")
-    elif view == 'history':
-        acct = data.history_all
-        days = sorted(set(acct['clones']) | set(acct['views']))
-        print(f'History store: {len(days)} days, coverage {data.history.get("coverage", [])}')
-        for d in days:
-            print(f"  {d}  clones={acct['clones'].get(d, 0):>5} views={acct['views'].get(d, 0):>5}")
+        for r in sorted(data.funnel_depth().values(), key=lambda r: -r['depth_ratio']):
+            top = sorted(r['categories'].items(), key=lambda kv: -kv[1])[:3]
+            mix = ' '.join(f'{c}={n}' for c, n in top)
+            print(f'  {r["repo"]:<30} depth={r["depth_ratio"]:>6.2f} '
+                  f'views={r["total"]:>6}  {mix}')
+    elif view == 'why':
+        for line in derive.derivation(timeframe):
+            print(line)
     else:
         render_text(data, timeframe)
 
@@ -1245,12 +2772,13 @@ def render_text_view(data, view, timeframe='2w'):
 def render_text(data, timeframe):
     """Print everything to stdout — no curses."""
     repos = data.repos
-    if not repos:
+    if not repos and not data.has_store():
         print('No repository data found.')
-        print('Run make fetch && make analyze first.')
+        print('Run  catnip run  first.')
         return
 
-    owner = data.totals.get('owner') or 'github'
+    owner = (data.totals.get('owner') or (data.history or {}).get('owner')
+             or '(owner unset)')
     print(f'catnip  [{owner}]  [{timeframe}]')
     print(f'Repos: {data._total_repos}  Stars: {data._totals["total_stars"]:,}  Forks: {data._totals["total_forks"]:,}')
     alltime = ''
@@ -1306,8 +2834,15 @@ def main(argv=None):
                         help='Disable curses, print to stdout instead.')
     parser.add_argument('--timeframe', choices=TIMEFRAMES, default='2w',
                         help='Initial timeframe (default: 2w).')
-    parser.add_argument('--view', choices=VIEWS, default='traffic',
-                        help='Initial view; with --text, which view to print.')
+    parser.add_argument('--view', choices=(*VIEWS, 'why'), default='traffic',
+                        help='Initial view; with --text, which view to print. '
+                             "'why' prints a derivation instead of data.")
+    parser.add_argument('--history-file',
+                        help='Durable daily store to read (default: from config).')
+    parser.add_argument('--stats-file',
+                        help='Account totals to read (default: from config).')
+    parser.add_argument('--store-only', action='store_true',
+                        help='Read only the durable store; ignore run directories.')
     args = parser.parse_args(argv)
 
     from catnip.config import Config, ConfigError
@@ -1317,15 +2852,26 @@ def main(argv=None):
         print(f'catnip: config error: {exc}', file=sys.stderr)
         return 2
 
-    run_dir = Path(args.run_dir) if args.run_dir else cfg.latest_run()
-    if run_dir is None:
-        print('catnip: no runs found. Run `catnip run` first.', file=sys.stderr)
-        return 1
-    if not (run_dir / 'analysis').is_dir():
-        print(f'catnip: {run_dir} has no analysis/ — run `catnip analyze` first.', file=sys.stderr)
-        return 1
+    history_file = Path(args.history_file) if args.history_file else cfg.history_file
+    stats_file = Path(args.stats_file) if args.stats_file else cfg.stats_file
 
-    data = AnalyticsData(run_dir, cfg.stats_file, cfg.history_file)
+    run_dir = None if args.store_only else (
+        Path(args.run_dir) if args.run_dir else cfg.latest_run())
+    if run_dir is not None and not (run_dir / 'analysis').is_dir():
+        print(f'catnip: {run_dir} has no analysis/ — run `catnip analyze` first.',
+              file=sys.stderr)
+        return 1
+    if run_dir is None and not Path(history_file).is_file():
+        # Neither source exists: this is a fresh install, not a pruned one.
+        print('catnip: no runs and no history store. Run `catnip run` first.',
+              file=sys.stderr)
+        return 1
+    if run_dir is None and not args.store_only:
+        print(f'catnip: no runs on disk — reading the durable store only '
+              f'({history_file}). Per-run views (lang, freq, funnel) will be empty.',
+              file=sys.stderr)
+
+    data = AnalyticsData(run_dir, stats_file, history_file)
     if args.text_mode:
         if args.view != 'traffic':
             render_text_view(data, args.view, args.timeframe)

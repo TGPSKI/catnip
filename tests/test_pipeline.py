@@ -105,7 +105,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         stats = json.loads((self.root / "stats" / "totals.json").read_text())
         self.assertEqual(stats["owner"], "testuser")
-        self.assertEqual(stats["total_repos"], 2)
+        self.assertEqual(stats["total_repos"], 3)
         # 14 days x (2 + 3 clones/day baseline with the +i%3 wobble) — the
         # exact figure matters less than it being stable across a rebuild.
         rebuilt_once = stats["total_clones"]

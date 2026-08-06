@@ -21,6 +21,7 @@ Consequences you must preserve:
 | `totals.py` is a pure rebuild, never an accumulator | Every run re-snapshots the same 14 days; summing them inflates clones severalfold |
 | Traffic merges are element-wise **max**, never sum | GitHub revises recent days upward as its pipeline settles |
 | The timer is `Persistent=true` | A machine asleep at the scheduled time must run on wake |
+| Derived views read `stats/history/`, never the rolling totals | The rolling window loses its left edge nightly; differencing two snapshots of it reports "what aged out" as "what changed" |
 
 If a change makes any of those five statements false, it is wrong even if
 the tests pass.
@@ -39,9 +40,14 @@ src/catnip/
   traffic_funnel.py   path taxonomy               | run by analyze.py in order
   traffic_correlation.py  cross-repo Pearson      | (cluster consumes profile
   traffic_cluster.py  cosine clustering          /   and funnel output)
+  derive.py           EVERY windowed number the TUI shows, computed from
+                      the durable daily store alone. Pure, offline-testable,
+                      and the home of DERIVATIONS — the [?] overlay text
+                      lives beside the formula it describes
   history.py          analysis CSVs -> stats/history/  (never pruned)
   totals.py           runs + history -> stats/totals.json
-  ui.py               the curses app: every view, every keybinding
+  ui.py               the curses app: every view, every keybinding. Draws;
+                      does not decide what a number means (that is derive.py)
   doctor.py           preflight + health checks; `--json` is an agent surface
   prune.py            retention with the data-loss guard
   timer.py            renders and installs the systemd user units
@@ -100,7 +106,7 @@ commit or the pipeline tests are testing a shape that no longer exists.
   identical — a test asserts it. The doubled `-` is load-bearing:
   without it `a-b` and `a_b` collide and one repo's raw JSON overwrites
   the other's.
-- **The 16 TUI CSVs** are listed in `doctor.TUI_CSVS`. A deep-traffic
+- **The 17 TUI CSVs** are listed in `doctor.TUI_CSVS`. A deep-traffic
   stage that fails inside `analyze.py` is only a warning, so that list
   is what turns "one silently empty panel three days later" into a
   failed `catnip verify` now. Adding a view means adding its CSV there.

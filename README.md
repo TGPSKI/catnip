@@ -8,12 +8,14 @@ with timestamps, releases, pull requests, languages, commit activity —
 for every repository you own or administer. Stdlib Python and `gh`, no
 install step, no service to sign up for, no data leaving your machine.
 
-<img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over 35 repositories: the traffic view charts daily views and clones as bar graphs, pressing t widens the timeframe from the last 14 days to all stored history, the top-repos view cycles its ranking criterion to forks, the repo table scrolls and then filters live to four repositories by typing /react, the anomaly view lists MAD-scored traffic spikes and filters down to the extreme ones, the content funnel breaks views down by page category, the history store view shows daily series since its epoch plus stars per month, and the demo ends back on the traffic view"/>
+<img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over 98 repositories: the audience view classifies each repo as audience, mixed or crawler from its clones-per-unique-visitor ratio, showing one repo cloned 38 times per unique visitor labelled crawler; pressing ? opens a derivation overlay giving the formula, weights, thresholds and withheld components behind that score; the deltas view shows signed windowed change and a per-day rate per repo; the anomaly view is a repo-by-day heatmap above a sortable list of account events, and pressing tab then space opens one of them — the 30th of July, five repos, leather spiking to a modified z-score of 81.6 on 308 clones against a median of 6; the repo table lists momentum, audience and depth columns; and pressing space on a repo row opens its drilldown, with daily views and clones charts marked under the spike days, unique cloners against unique visitors, and a CONFLICT flag where the clone-intent score reads developer while the audience classification reads crawler"/>
 
-*`catnip tui` over one real account's public repositories — traffic
-charts, the `t` timeframe widening to the full history store, live repo
-filtering, MAD anomaly detection, and the content funnel. Everything here
-is on disk after one `catnip run`.*
+*`catnip tui` over one real account's 98 public repositories — the
+audience view separating people from fetcher fleets, `[?]` explaining
+exactly how that score was computed, windowed deltas, the anomaly
+heatmap with its account-event list, one event opened in full, and
+`[space]` opening a repo's drilldown. Everything here is on disk after
+one `catnip run`.*
 
 ## Why it exists
 
@@ -104,31 +106,70 @@ Everything lands under `CATNIP_DATA_DIR` (default
 ```
 runs/20260805T031722Z/
   raw/          one JSON body per endpoint per repo, as returned
-  analysis/     16 CSVs + summary.md — the schema everything else reads
+  analysis/     17 CSVs + summary.md — the schema everything else reads
   reports/      which repos were skipped, and which denied traffic
   manifest.json owner, counts, rate-limit spend, duration
 stats/
   totals.json           account-wide rollup, rebuilt from scratch each run
   history/
-    traffic_daily.json  the permanent series — never pruned
+    traffic_daily.json  the permanent series — never pruned. Daily clones
+                        and views per repo (count and uniques), plus dated
+                        referrer observations and a release/push event log
     snapshots.jsonl     append-only per-run, per-repo snapshots
 ```
 
 ## The TUI
 
-`catnip tui` opens twelve views over the newest run. Jump with `1`–`=`,
-cycle with `v`/`V`, window with `t` (1d / 1w / 2w / all — `all` reads the
-history store and grows past GitHub's horizon), filter with `/`, sort
+`catnip tui` opens ten views. Jump with `1`–`0`, cycle with `v`/`V`,
+window with `t`/`T` (1d / 1w / 2w / all / epoch), filter with `/`, sort
 with `s`, and quit with `q`.
 
-The traffic, top-repos, table, language, code-frequency, deltas, anomaly
-(MAD-based outlier detection), cloner-profile, correlation, funnel, and
-history views all read the same CSVs, so anything the TUI shows is also
-available headlessly: `catnip view anomaly` prints it as text.
+| Key | View | Answers |
+|---|---|---|
+| `1` | traffic | daily clones and views, account-wide; at `epoch`, the whole store plus stars/month |
+| `2` | audience | is this repo's traffic people or fetchers? |
+| `3` | table | every repo, sortable by momentum, audience, depth, stars-per-visitor |
+| `4` | lang | bytes by language |
+| `5` | freq | weekly commits |
+| `6` | deltas | what changed this window versus last, and the per-day rate |
+| `7` | anomaly | repo × day heatmap, with simultaneous spikes folded into one account event |
+| `8` | profile | clone intent — how many of the people who looked, cloned |
+| `9` | correlation | repos coupled after the account-wide release wave is removed |
+| `0` | funnel | content mix per repo, and how far past the front door traffic got |
+
+Two keys carry most of the design:
+
+- **`[space]`** on any repo row opens a full-screen **drilldown** for that
+  repo — dual daily chart with anomaly markers and release rules drawn
+  under the days that caused them, the uniques track, its funnel mix, its
+  coupled repos, and its PR/release/push activity. `j`/`k` steps to the
+  next repo in the list you came from; `space` or `esc` returns. On the
+  anomaly screen, `[tab]` moves to the account-event list and `[space]`
+  opens the event instead: every repo that moved that day, its |Z|,
+  value and median, and whatever release or push it followed.
+- **`[?]`** opens the **derivation overlay**: the formula, thresholds and
+  inputs behind whatever is on screen, including whether the numbers are
+  raw counts or uniques and which components were withheld for want of
+  evidence. A score you cannot explain from inside the TUI is a defect.
+
+Every windowed number is computed from the durable daily store, never
+from GitHub's rolling 14-day totals — those lose their oldest day nightly,
+so differencing them reports window artifacts as change. The one
+exception is the funnel, whose path data GitHub exposes only as a rolling
+snapshot; that view says so, and `[?]` explains why.
+
+Everything is available headlessly: `catnip view deltas`,
+`catnip view audience`, and so on read the same functions the screens do,
+and `catnip view why --timeframe audience` prints a derivation.
+
+The viewer also runs with **no run directory at all** — after `catnip
+prune` has swept every run, the store still answers. Point it anywhere
+with `--history-file` / `--stats-file`, or force it with `--store-only`.
 
 The drawing layer is [pane](https://github.com/TGPSKI/pane), vendored
 byte-identically into `src/catnip/tui/`. It knows what a terminal is;
-everything that knows what a repository is lives in `src/catnip/ui.py`.
+`src/catnip/derive.py` knows what a number means; `src/catnip/ui.py`
+knows what a repository is.
 
 ## Automation
 

@@ -33,8 +33,10 @@ Collecting
   verify          Assert that every artifact the TUI reads exists
 
 Reading
-  tui             Interactive terminal UI over the newest run
-  view VIEW       Print one view as text (traffic, top, table, anomaly, funnel, …)
+  tui             Interactive terminal UI ([enter] drills into a repo, [?] explains
+                  any score). Works store-only when no run survives pruning
+  view VIEW       Print one view as text (traffic, audience, table, deltas,
+                  anomaly, profile, correlation, funnel, lang, freq)
   summary         Print the newest run's summary.md
   runs            List run directories
 

@@ -15,20 +15,31 @@ from pathlib import Path
 from catnip.config import slug_for
 
 
-def _traffic(days, base, start):
+def _traffic(days, base, start, spike_day=-3, spike=40):
+    """A steady series with one deliberate spike.
+
+    The spike is not decoration. A perfectly regular series has no
+    anomalies, so every test of the anomaly grid, the campaign collapsing,
+    the drilldown's markers and the deltas view would be asserting against
+    a screen that is empty for the most boring possible reason.
+    """
+    counts = [base + (i % 3) for i in range(days)]
+    if days >= abs(spike_day):
+        counts[spike_day] = base * spike
     return {
-        "count": base * days,
+        "count": sum(counts),
         "uniques": max(1, base // 2) * days,
         "clones": [
             {"timestamp": f"{start + timedelta(days=i)}T00:00:00Z",
-             "count": base + (i % 3), "uniques": max(1, base // 2)}
+             "count": counts[i], "uniques": max(1, base // 2)}
             for i in range(days)
         ],
     }
 
 
-def make_run(root, repos=("alpha", "beta-repo"), days=14, run_id="20260805T120000Z",
-             with_traffic=True, stars=3):
+def make_run(root, repos=("alpha", "beta-repo", "gamma-fork"), days=14,
+             run_id="20260805T120000Z", with_traffic=True, stars=3,
+             forks=("gamma-fork",)):
     """Write a run directory under <root>/runs/<run_id> and return its path."""
     root = Path(root)
     run = root / "runs" / run_id
@@ -43,7 +54,9 @@ def make_run(root, repos=("alpha", "beta-repo"), days=14, run_id="20260805T12000
             "name": name,
             "full_name": f"testuser/{name}",
             "private": False,
-            "fork": False,
+            # One fork on purpose: the views that separate what you wrote
+            # from what you forked are untestable without one.
+            "fork": name in forks,
             "archived": False,
             "html_url": f"https://github.com/testuser/{name}",
             "description": f"synthetic repo {name}",
@@ -72,10 +85,16 @@ def make_run(root, repos=("alpha", "beta-repo"), days=14, run_id="20260805T12000
              "merged_at": "2026-07-30T00:00:00Z", "created_at": "2026-07-29T00:00:00Z",
              "closed_at": "2026-07-30T00:00:00Z", "user": {"login": "testuser"}},
         ]), encoding="utf-8")
+        # Two releases on purpose: one before the traffic window and one
+        # inside it, so a test can tell "drew every release" apart from
+        # "drew the releases that fall in the window under the chart".
         (raw / f"repo_{slug}_releases.json").write_text(json.dumps([
             {"tag_name": "v0.1.0", "name": "v0.1.0", "published_at": "2026-07-15T00:00:00Z",
              "created_at": "2026-07-15T00:00:00Z", "prerelease": False, "draft": False,
              "assets": [{"name": "dist.tar.gz", "size": 2048, "download_count": 7}]},
+            {"tag_name": "v0.2.0", "name": "v0.2.0", "published_at": "2026-07-30T00:00:00Z",
+             "created_at": "2026-07-30T00:00:00Z", "prerelease": False, "draft": False,
+             "assets": [{"name": "dist.tar.gz", "size": 4096, "download_count": 3}]},
         ]), encoding="utf-8")
         (raw / f"repo_{slug}_issues.json").write_text(json.dumps([
             {"number": 2, "title": "an issue", "state": "open",
@@ -83,13 +102,13 @@ def make_run(root, repos=("alpha", "beta-repo"), days=14, run_id="20260805T12000
              "user": {"login": "testuser"}},
         ]), encoding="utf-8")
         (raw / f"repo_{slug}_commits.json").write_text(json.dumps(
-            [{"week": 1753228800, "total": 5, "days": [1, 1, 1, 1, 1, 0, 0]}]),
+            [{"week": 1785024000, "total": 5, "days": [1, 1, 1, 1, 1, 0, 0]}]),
             encoding="utf-8")
         (raw / f"repo_{slug}_freq.json").write_text(
-            json.dumps([[1753228800, 500, -100]]), encoding="utf-8")
+            json.dumps([[1785024000, 500, -100]]), encoding="utf-8")
         (raw / f"repo_{slug}_contstats.json").write_text(json.dumps([
             {"author": {"login": "testuser"}, "total": 42,
-             "weeks": [{"w": 1753228800, "a": 500, "d": 100, "c": 5}]},
+             "weeks": [{"w": 1785024000, "a": 500, "d": 100, "c": 5}]},
         ]), encoding="utf-8")
         (raw / f"repo_{slug}_readme.md").write_text(f"# {name}\n", encoding="utf-8")
         (raw / f"repo_{slug}_stargazers.json").write_text(json.dumps([
