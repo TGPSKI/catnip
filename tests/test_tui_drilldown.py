@@ -322,3 +322,105 @@ class AnomalyAgreementTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PairDetailTests(unittest.TestCase):
+    """A correlation table gives a number and no way to check it.
+
+    [space] on a pair opens both daily series, both residual series, and
+    the raw-vs-residualized gap — which is the entire claim the view
+    makes: that what survives is not the account-wide release wave.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+            history.ingest(root / "runs", root / "stats" / "history", "testuser")
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def app(self):
+        return build_tui(self.data, 40, 150, "correlation")
+
+    def test_space_opens_the_highlighted_pair(self):
+        app = self.app()
+        pairs = self.data.coupled(app.timeframe)["pairs"]
+        if not pairs:
+            self.skipTest("fixture has no coupled pairs")
+        app.handle_key(ord(" "))
+        self.assertEqual(set(app.drilldown_pair), {pairs[0]["a"], pairs[0]["b"]})
+
+    def test_space_and_escape_both_close_it(self):
+        app = self.app()
+        if not self.data.coupled(app.timeframe)["pairs"]:
+            self.skipTest("fixture has no coupled pairs")
+        app.handle_key(ord(" "))
+        app.handle_key(ord(" "))
+        self.assertIsNone(app.drilldown_pair)
+        app.handle_key(ord(" "))
+        app.handle_key(27)
+        self.assertIsNone(app.drilldown_pair)
+
+    def test_capital_q_quits_from_the_pair_view(self):
+        app = self.app()
+        app.drilldown_pair = ("alpha", "beta-repo")
+        self.assertTrue(app.handle_key(ord("Q")))
+
+    def test_pair_view_renders_for_every_pair(self):
+        app = self.app()
+        for pair in self.data.coupled(app.timeframe)["pairs"]:
+            a = self.app()
+            a.drilldown_pair = (pair["a"], pair["b"])
+            a.render(40, 150)
+            text = " ".join(t for _y, _x, t in a.writes)
+            self.assertIn("residual r", text)
+            self.assertIn("Residuals", text)
+
+    def test_an_uncoupled_pair_says_so_rather_than_faking_a_chart(self):
+        app = self.app()
+        app.drilldown_pair = ("alpha", "no-such-repo")
+        app.render(40, 150)
+        text = " ".join(t for _y, _x, t in app.writes)
+        self.assertIn("not coupled", text)
+
+
+class FunnelPagesTests(unittest.TestCase):
+    """The grid says what KIND of page was read; only this says which."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_top_pages_follow_the_cursor(self):
+        app = build_tui(self.data, 40, 150, "funnel")
+        rows = app._funnel_repo_rows()
+        for i in range(len(rows)):
+            app.cursor("funnel").to(i, len(rows), 10)
+            app.writes.clear()
+            app.render(40, 150)
+            text = " ".join(t for _y, _x, t in app.writes)
+            self.assertIn(f"Top pages — {rows[i]['repo']}", text)
+
+    def test_the_shade_ramp_is_named(self):
+        app = build_tui(self.data, 40, 150, "funnel")
+        app.render(40, 150)
+        text = " ".join(t for _y, _x, t in app.writes)
+        self.assertIn("shade:", text)
+        self.assertIn("to 25%", text)
+        self.assertIn("largest category", text)

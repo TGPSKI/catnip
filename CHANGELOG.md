@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opens an event detail screen: which repos moved that day, each one's
   |Z|, value and median, and whatever release or push it followed. Each
   row carries a colour block in the severity of its worst repo.
+- **`[space]` on a correlated pair opens both repos side by side** — each
+  daily series, each residual series, the share of the account each
+  accounts for, and a plain sentence about what residualizing changed. A
+  correlation table gives a number and no way to check it; this shows the
+  data the r was computed on.
+- **The funnel names its shading and lists real pages.** The four fill
+  weights were an unexplained texture; they now carry a legend (share of
+  that row's largest category) and the panel beneath the grid lists the
+  selected repo's actual top pages with views, uniques and paths. A
+  category mix says what kind of page was read and can never say which.
 - **Horizontal scrolling on the anomaly grid** (`h`/`l` or arrows). At
   the `all` and `epoch` timeframes 54 days do not fit as labelled
   columns; the grid now shows as many legible, individually dated
@@ -94,6 +104,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sections are spaced. Funnel columns carry readable labels (`home`,
   `docs`, `tree`) instead of four-character truncations of their internal
   names, and its selection no longer inverts a whole row of grid cells.
+- **The header claimed a scope the views were not applying.** Fork status
+  comes from a run's repo CSV; a run predating the `is_fork` column
+  leaves it unknown, `in_scope()` correctly filters nothing — and the
+  header still printed `[owned]`, so language bytes and commit counts
+  from sixty-three forks were presented as though curated. The tag now
+  says `[owned: needs catnip analyze]` when the data cannot support it.
 - **A schema bump relabelled the store without filling it.** `ingest`
   skips runs already in `fetches_ingested`, so a store upgraded to
   schema 2 declared `referrers` and `events` and then never populated

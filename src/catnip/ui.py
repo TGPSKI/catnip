@@ -423,6 +423,9 @@ class AnalyticsTUI(TuiApp):
         # The account-event list is a second cursor on the anomaly screen:
         # its rows are days, not repos, so it cannot share one.
         self.cursors['anomaly_events'] = RowCursor()
+        # Correlation rows are pairs, not repos, so they cannot share the
+        # repo cursor either.
+        self.cursors['correlation_pairs'] = RowCursor()
         self.anomaly_pane = 1     # 0 = account events, 1 = the repo x day grid
         self.event_sort = 0       # index into EVENT_SORT_KEYS
         # First visible day in the grid, or None to pin to the newest. A
@@ -438,6 +441,7 @@ class AnalyticsTUI(TuiApp):
         self.scope = 0            # index into SCOPES
         self.drilldown = None     # repo name, or None for the account views
         self.drilldown_event = None   # an account-event day, or None
+        self.drilldown_pair = None    # (repo_a, repo_b), or None
         self.overlay = False      # [?] derivation overlay
         self.scroll = 0
 
@@ -585,6 +589,9 @@ class AnalyticsTUI(TuiApp):
             if self.overlay:
                 self.overlay = False
                 return False
+            if self.drilldown_pair:
+                self.drilldown_pair = None
+                return False
             if self.drilldown_event:
                 self.drilldown_event = None
                 return False
@@ -613,10 +620,18 @@ class AnalyticsTUI(TuiApp):
         # useful, but a key you press to confirm should never be the key
         # that undoes the thing you confirmed.
         if key in (curses.KEY_ENTER, 10, 13, ord(' ')):
-            if self.drilldown_event or self.drilldown:
+            if self.drilldown_pair or self.drilldown_event or self.drilldown:
                 if key == ord(' '):
+                    self.drilldown_pair = None
                     self.drilldown_event = None
                     self.drilldown = None
+                return False
+            if self.view == 'correlation':
+                pairs = self.data.coupled(self.timeframe)['pairs']
+                if pairs:
+                    cur = self.cursors['correlation_pairs'].clamp(len(pairs),
+                                                                  self._page())
+                    self.drilldown_pair = (pairs[cur.index]['a'], pairs[cur.index]['b'])
                 return False
             if self.view == 'anomaly' and self.anomaly_pane == 0:
                 events = self._anomaly_events()
@@ -628,6 +643,24 @@ class AnalyticsTUI(TuiApp):
             repo = self.selected_repo()
             if repo:
                 self.drilldown = repo
+            return False
+        if self.drilldown_pair:
+            if key == ord('Q'):
+                return True
+            if key in (ord('q'), ord('h'), curses.KEY_LEFT,
+                       curses.KEY_BACKSPACE, 127, 8):
+                self.drilldown_pair = None
+                return False
+            if key in (curses.KEY_DOWN, ord('j'), curses.KEY_UP, ord('k')):
+                pairs = self.data.coupled(self.timeframe)['pairs']
+                if pairs:
+                    delta = 1 if key in (curses.KEY_DOWN, ord('j')) else -1
+                    cur = self.cursors['correlation_pairs'].move(
+                        delta, len(pairs), self._page())
+                    self.drilldown_pair = (pairs[cur.index]['a'], pairs[cur.index]['b'])
+                return False
+            if key == ord('r'):
+                self.data.reload()
             return False
         if self.drilldown_event:
             if key == ord('Q'):
@@ -797,6 +830,19 @@ class AnalyticsTUI(TuiApp):
             else:
                 cur.end(len(events), page)
             return
+        if self.view == 'correlation':
+            pairs = self.data.coupled(self.timeframe)['pairs']
+            cur = self.cursors['correlation_pairs']
+            if key in (curses.KEY_UP, ord('k')):
+                cur.move(-1, len(pairs), page)
+            elif key in (curses.KEY_DOWN, ord('j')):
+                cur.move(1, len(pairs), page)
+            elif key == ord('g'):
+                cur.home(len(pairs), page)
+            else:
+                cur.end(len(pairs), page)
+            self.scroll = cur.scroll
+            return
         if self.view in REPO_ROW_VIEWS:
             rows = self._cursor_rows()
             cur = self.cursor()
@@ -937,7 +983,9 @@ class AnalyticsTUI(TuiApp):
         if avail <= 0:
             return
 
-        if self.drilldown_event:
+        if self.drilldown_pair:
+            self._render_pair_detail(avail, max_x)
+        elif self.drilldown_event:
             self._render_event_detail(avail, max_x)
         elif self.drilldown:
             self._render_drilldown(avail, max_x)
@@ -1006,7 +1054,17 @@ class AnalyticsTUI(TuiApp):
                  or (self.data.history or {}).get('owner')
                  or '(owner unset)')
         search_tag = f'  /{self.search}' if self.search else ''
-        scope_tag = '' if self.scope_label() == 'all' else f'  [{self.scope_label()}]'
+        # Never claim a scope the data cannot support. A run predating the
+        # is_fork column leaves fork status unknown, in_scope() correctly
+        # filters nothing, and a bare "[owned]" in the header then asserts
+        # a filter that is not being applied — which is worse than showing
+        # no filter at all, because the numbers look curated.
+        if self.scope_label() == 'all':
+            scope_tag = ''
+        elif self.data.knows_forks():
+            scope_tag = f'  [{self.scope_label()}]'
+        else:
+            scope_tag = f'  [{self.scope_label()}: needs catnip analyze]'
         text = f' catnip  [{owner}]  [{self.timeframe}]{scope_tag}{search_tag}'
         self._put(0, 0, text.ljust(max_x - 1), curses.color_pair(6) | self.curses.A_BOLD)
         # View strip: digit-key jump targets with the active view highlighted.
@@ -2074,6 +2132,106 @@ class AnalyticsTUI(TuiApp):
             return 1
         return 2
 
+    def _render_pair_detail(self, avail, max_x):
+        """Two coupled repos, side by side, with the residuals the r is
+        actually computed on.
+
+        A correlation table gives a number and no way to check it. This
+        shows both daily series, both residual series, and the gap between
+        raw and residualized r — which is the whole claim the view makes:
+        that what survives is not the account-wide release wave.
+        """
+        curses = self.curses
+        a, b = self.drilldown_pair
+        tf = self.timeframe
+        days = self.data.window_days(tf)
+        result = self.data.coupled(tf)
+        pair = next((p for p in result['pairs']
+                     if {p['a'], p['b']} == {a, b}), None)
+        last = avail + 1
+
+        self._put(2, 1, f' {a} <-> {b} ', curses.color_pair(5) | self.curses.A_BOLD)
+        self._put(2, max_x - 32, '[space/esc] back  [j/k] next pair', self.curses.A_DIM)
+        if not pair or not days:
+            self._put(4, 3, 'This pair is not coupled in the current window.',
+                      self.curses.A_DIM)
+            return
+        lag = ('lag available' if result['lag_available'] else
+               f'lag suppressed (needs {derive.LAG_MIN_DAYS} days, have {len(days)})')
+        self._put(3, 1, f'residual r {pair["r"]:+.3f}   raw r {pair["raw_r"]:+.3f}   '
+                  f'n {pair["n"]} days   {lag}', self.curses.A_DIM)
+
+        # What residualizing did. This is the sentence the view exists for.
+        removed = abs(pair['raw_r']) - abs(pair['r'])
+        if removed > 0.15:
+            verdict = ('most of the raw correlation was the account-wide wave; '
+                       'what is left is weaker than it looked')
+        elif removed < -0.15:
+            verdict = ('these move together MORE once the wave is removed — the '
+                       'account trend was masking it')
+        else:
+            verdict = ('the wave explains little of this; they move together on '
+                       'their own')
+        self._put(4, 1, f'raw {pair["raw_r"]:+.3f} -> residual {pair["r"]:+.3f}: {verdict}'
+                  [: max_x - 3], curses.color_pair(3))
+
+        metric = 'clones'
+        sa = derive.series(self.data.history, a, metric, days)
+        sb = derive.series(self.data.history, b, metric, days)
+        plot_h = min(5, max(3, (last - 20) // 2))
+        y = 6
+        if plot_h >= 3 and y + 2 * (plot_h + 3) < last:
+            for name, ser, color in ((a, sa, curses.color_pair(1)),
+                                     (b, sb, curses.color_pair(2))):
+                y = bar_chart(
+                    self._put, curses, y, self._chart_series(days, ser), plot_h, max_x,
+                    title=f'{name} — daily {metric} ({sum(ser)})',
+                    title_attr=curses.color_pair(6) | curses.A_BOLD,
+                    axis_attr=curses.color_pair(6), color=color,
+                    max_bar_w=6, value_labels=True, label_fit=True, bin_unit='d',
+                    clip_ratio=6) + 1
+
+        # The residual series: what Pearson actually saw.
+        account = derive.account_series(self.data.history, metric, days)
+        total = sum(account) or 1
+        if y < last:
+            self._put(y, 1, 'Residuals — daily minus each repo\'s expected share of '
+                      'the account total', curses.color_pair(6) | self.curses.A_BOLD)
+            y += 1
+        spark_w = max(10, min(48, max_x - 40))
+        for name, ser in ((a, sa), (b, sb)):
+            if y >= last:
+                break
+            share = sum(ser) / total
+            resid = [ser[i] - share * account[i] for i in range(len(days))]
+            self._put(y, 3, f'{name[:22]:<22} {_sparkline([r - min(resid) for r in resid][-spark_w:]):<{spark_w}} '
+                      f'share {share * 100:>5.1f}% of account {metric}', 0)
+            y += 1
+
+        # Side-by-side identity, so the pair is more than two names.
+        aud = self.data.audience(tf)
+        ins = self.data.intent(tf)
+        y += 1
+        if y < last:
+            self._put(y, 1, 'Side by side', curses.color_pair(6) | self.curses.A_BOLD)
+            y += 1
+        col = max_x // 2
+        for i, name in enumerate((a, b)):
+            x = 3 if i == 0 else col
+            ra, ri = aud.get(name) or {}, ins.get(name) or {}
+            d = self.data.deltas(tf).get(name) or {}
+            lines = [
+                name[:34],
+                f"clones {(d.get('clones') or {}).get('cur', 0)}  "
+                f"views {(d.get('views') or {}).get('cur', 0)}",
+                f"audience {ra.get('score', 0):.2f} [{ra.get('label', '?')}]",
+                f"intent {ri.get('score', 0):.2f} [{ri.get('label', '?')}]",
+            ]
+            for j, line in enumerate(lines):
+                if y + j < last:
+                    self._put(y + j, x, line[: col - 4],
+                              curses.color_pair(5) | curses.A_BOLD if j == 0 else 0)
+
     def _render_correlation_view(self, avail, max_x):
         """Residualized coupling, not raw Pearson.
 
@@ -2106,7 +2264,9 @@ class AnalyticsTUI(TuiApp):
                   f'{"resid r":>9} {"raw r":>8} {"n":>4}',
                   curses.color_pair(2) | self.curses.A_BOLD)
         page = avail - 6
-        for i, pair in enumerate(pairs[self.scroll:self.scroll + page]):
+        cur = self.cursors['correlation_pairs'].clamp(len(pairs), page)
+        self.scroll = cur.scroll
+        for i, pair in enumerate(pairs[cur.scroll:cur.scroll + page]):
             r = pair['r']
             tier = self._corr_tier(r)
             if tier == 0:
@@ -2115,10 +2275,15 @@ class AnalyticsTUI(TuiApp):
                 c = curses.color_pair(6) if r > 0 else curses.color_pair(3)
             else:
                 c = self.curses.A_DIM
-            self._put(7 + i, 3,
-                      f'  {pair["a"][:name_w]:<{name_w}} <-> {pair["b"][:name_w]:<{name_w}} '
+            selected = cur.scroll + i == cur.index
+            marker = '>' if selected else ' '
+            self._put(7 + i, 3, f'{marker} {pair["a"][:name_w]:<{name_w}}',
+                      curses.color_pair(5) if selected else c)
+            self._put(7 + i, 3 + 2 + name_w,
+                      f' <-> {pair["b"][:name_w]:<{name_w}} '
                       f'{r:>9.3f} {pair["raw_r"]:>8.3f} {pair["n"]:>4}', c)
-        self._scrollbar(7, page, len(pairs), self.scroll, max_x)
+            self._mark_selected(7 + i, max_x, selected)
+        self._scrollbar(7, page, len(pairs), cur.scroll, max_x)
         self.scroll_indicator(2, max_x, len(pairs), page)
 
     # Category -> a label that fits a narrow column and still reads. The
@@ -2156,6 +2321,45 @@ class AnalyticsTUI(TuiApp):
             rows = [r for r in rows if needle in r['repo'].lower()]
         return sorted(rows, key=lambda r: (-r['depth_ratio'], -r['total']))
 
+    def _render_funnel_pages(self, y, avail, max_x, repo):
+        """The selected repo's actual pages, biggest first.
+
+        The grid says what KIND of page was read; it can never say which
+        one. "docs outdrew the landing page 2:1" is the finding, but the
+        thing you act on is which document.
+        """
+        curses = self.curses
+        if y >= avail or not repo:
+            return y
+        rows = [r for r in self.data.funnel_data if r.get('repo_name') == repo]
+        rows.sort(key=lambda r: -_int(r, 'view_count'))
+        self._put(y, 1, f'Top pages — {repo}',
+                  curses.color_pair(6) | self.curses.A_BOLD)
+        y += 1
+        if not rows:
+            self._put(y, 3, 'no page data for this repo in the newest run',
+                      self.curses.A_DIM)
+            return y + 1
+        peak = _int(rows[0], 'view_count') or 1
+        bar_w = 12
+        path_w = max(20, max_x - bar_w - 44)
+        self._put(y, 3, f'  {"category":<14} {"views":>6} {"uniq":>5}  {"":<{bar_w}} page',
+                  curses.color_pair(2) | self.curses.A_BOLD)
+        y += 1
+        for row in rows[: max(0, avail - y + 1)]:
+            if y > avail:
+                break
+            cat = row.get('category', '')
+            views = _int(row, 'view_count')
+            uniq = _int(row, 'unique_visitors')
+            page = (row.get('title') or row.get('path') or '')[:path_w]
+            pair = self.FUNNEL_COLORS.get(cat, 0)
+            color = curses.color_pair(pair) if pair else self.curses.A_DIM
+            self._put(y, 3, f'  {self.FUNNEL_LABELS.get(cat, cat)[:14]:<14} {views:>6} '
+                      f'{uniq:>5}  {self._hbar(views, peak, bar_w):<{bar_w}} {page}', color)
+            y += 1
+        return y
+
     def _render_funnel_view(self, avail, max_x):
         """Content mix as a row-normalized heatmap, plus a depth leaderboard.
 
@@ -2170,9 +2374,21 @@ class AnalyticsTUI(TuiApp):
         rows = self._funnel_repo_rows()
         self._put(2, 1, f'Funnel \u2014 content mix and depth  [f]ilter: {filt}',
                   curses.color_pair(6) | self.curses.A_BOLD)
-        self._put(3, 1, 'Row = one repo, shaded by share of ITS OWN traffic per page '
-                  'category. depth = (docs+code+tree)/home; * = no home views at all. '
-                  'Rolling 14d ([?]).', self.curses.A_DIM)
+        self._put(3, 1, 'Row = one repo, shaded by share of ITS OWN busiest category. '
+                  'depth = (docs+code+tree)/home; * = no home views. Rolling 14d ([?]).',
+                  self.curses.A_DIM)
+        # The ramp was four unexplained fill weights. Naming the steps is
+        # the difference between a texture and a measurement.
+        x = 1
+        self._put(4, x, 'shade:', self.curses.A_DIM)
+        x += 7
+        for glyph, text in ((ramp_glyph(0.2), 'to 25%'), (ramp_glyph(0.4), 'to 50%'),
+                            (ramp_glyph(0.6), 'to 75%'), (ramp_glyph(1.0), 'to 100%')):
+            self._put(4, x, glyph * 2, curses.color_pair(2))
+            self._put(4, x + 3, text, self.curses.A_DIM)
+            x += len(text) + 6
+        self._put(4, x, 'of that row\'s largest category   blank = none',
+                  self.curses.A_DIM)
         if not rows:
             self._put_lines(5, self._no_run_note('path data'), max_x)
             return
@@ -2186,9 +2402,12 @@ class AnalyticsTUI(TuiApp):
         columns = [c for c, _n in sorted(totals.items(), key=lambda kv: -kv[1])][:10]
         name_w = min(22, max(10, max_x - 4 * len(columns) - 30))
 
-        self._put(5, 3 + name_w + 1 + 5 * len(columns) + 2, 'depth   views',
+        self._put(6, 3 + name_w + 1 + 5 * len(columns) + 2, 'depth   views',
                   curses.color_pair(2) | self.curses.A_BOLD)
-        page = max(1, avail - 6)
+        # Reserve the bottom third for the selected repo's actual pages —
+        # a category mix says what KIND of page was read, never which one.
+        pages_h = min(9, max(4, avail // 3))
+        page = max(1, avail - 7 - pages_h)
         cur = self.cursor('funnel').clamp(len(rows), page)
         self.scroll = cur.scroll
 
@@ -2210,7 +2429,7 @@ class AnalyticsTUI(TuiApp):
             grid_rows.append((row['repo'][:name_w],
                               [row['categories'].get(c, 0) / peak for c in columns]))
         end_row = heatmap(
-            self._put, self.curses, 5, max_x,
+            self._put, self.curses, 6, max_x,
             rows=grid_rows,
             col_labels=[self.FUNNEL_LABELS.get(c, c[:4]) for c in columns],
             label_w=name_w, cell_w=4, gap=1, attr_for=attr_for,
@@ -2229,11 +2448,14 @@ class AnalyticsTUI(TuiApp):
             # of this repo's traffic went past a front door nobody used".
             shown = ('  n/a' if not row['front'] and not row['deep']
                      else f'{deep:>5.2f}' if row['front'] else f'{row["deep"]:>4}*')
-            self._put(7 + i, num_x, f'{shown:>5}  {_compact_num(row["total"]):>6}',
+            self._put(8 + i, num_x, f'{shown:>5}  {_compact_num(row["total"]):>6}',
                       curses.color_pair(5) if idx == cur.index else color)
-            self._mark_selected(7 + i, max_x, idx == cur.index)
-        self._scrollbar(7, page, len(rows), cur.scroll, max_x)
+            self._mark_selected(8 + i, max_x, idx == cur.index)
+        self._scrollbar(8, page, len(rows), cur.scroll, max_x)
         self.scroll_indicator(2, max_x, len(rows), page)
+        selected = rows[cur.index]['repo'] if rows else None
+        end_row = self._render_funnel_pages(8 + min(page, len(rows)) + 1, avail,
+                                            max_x, selected)
         if end_row <= avail + 1:
             legend_x = 3
             for cat in columns:
@@ -2594,6 +2816,15 @@ class AnalyticsTUI(TuiApp):
         dim = self.curses.A_DIM
         if self.overlay:
             self.render_footer_items(max_y, [('[?]/[esc] close derivation', active)], x=1)
+            return
+        if self.drilldown_pair:
+            self.render_footer_items(max_y, [
+                ('[space/esc]back', dim),
+                ('[j/k]next pair', dim),
+                (f'[t/T]tf:{self.timeframe}', active if self.timeframe != '2w' else dim),
+                ('[?]derivation', dim),
+                ('[Q]uit', dim),
+            ], x=1)
             return
         if self.drilldown_event:
             self.render_footer_items(max_y, [
