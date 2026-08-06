@@ -1,0 +1,47 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- catnip's own data and configuration ---
+# Collected runs live in CATNIP_DATA_DIR (~/.local/share/catnip by
+# default), never in the checkout — but a local override or an old
+# repo-relative layout would land here, and traffic data for private
+# repositories is not something to commit by accident.
+catnip.conf
+/data/
+/runs/
+/stats/
+*.log
+
+# --- Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Local, per-machine agent settings ---
+.claude/settings.local.json
+.claude/settings.json
+.cursor/settings.json
+
+# --- Local secrets ---
+.env
+*.pem
+*.key
+*.bak

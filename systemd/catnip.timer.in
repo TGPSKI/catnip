@@ -1,0 +1,18 @@
+[Unit]
+Description=Run catnip on a schedule (@CATNIP_ONCALENDAR@)
+Documentation=https://github.com/TGPSKI/catnip
+
+[Timer]
+OnCalendar=@CATNIP_ONCALENDAR@
+# Spread load away from the top of the hour — everyone's cron fires at
+# 00:00, and GitHub's rate limiter notices.
+RandomizedDelaySec=@CATNIP_RANDOM_DELAY@
+# The reason this is not a plain cron line. GitHub serves ~14 trailing
+# days of traffic data and nothing older, so a machine that was asleep at
+# the scheduled time must run on wake — otherwise those days are gone
+# permanently and nothing later can recover them.
+Persistent=true
+Unit=catnip.service
+
+[Install]
+WantedBy=timers.target

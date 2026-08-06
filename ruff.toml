@@ -1,0 +1,38 @@
+# catnip is stdlib-only at run time; ruff is the single dev-time tool and
+# must never become an import. Python 3.10 is the floor — the same floor
+# pane targets, because src/catnip/tui is vendored from it.
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+]
+ignore = [
+    "E501",  # line length is enforced by review, not by a hard error
+]
+
+[lint.per-file-ignores]
+# sys.path bootstrap before imports, deliberately — catnip has no install step.
+"tests/*" = ["E402"]
+# Vendored byte-identical from https://github.com/TGPSKI/pane. A style-only
+# rewrite here would diff against upstream and against every other consumer
+# in the portfolio, so the linter defers to the upstream's own exemptions.
+# Fix these in pane and re-vendor; never in place.
+"src/catnip/tui/framework.py" = ["SIM105"]
+"src/catnip/tui/charts.py" = ["B007", "B905"]
+"tests/pty_smoke.py" = ["SIM105", "E402"]
+# analyze.py is the one file written in a compressed statement style
+# (`a = x; b = y` and `if cond: return`), inherited from the private
+# pipeline catnip was extracted from. Reformatting ~50 sites in the
+# module that defines every CSV schema buys style at the cost of a
+# review-sized diff across dense numeric code. The exemption is narrow
+# and this file only: new modules lint clean with no exemption, and if
+# analyze.py is ever reformatted, delete these two lines with it.
+"src/catnip/analyze.py" = ["E701", "E702", "B007", "B905"]
+"src/catnip/totals.py" = ["B007", "B905"]

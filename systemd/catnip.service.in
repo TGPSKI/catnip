@@ -1,0 +1,26 @@
+[Unit]
+Description=catnip — collect GitHub repository and traffic analytics
+Documentation=https://github.com/TGPSKI/catnip
+# gh talks to api.github.com; without this the unit can fire before DNS
+# is up on a laptop that just woke, and fail for no interesting reason.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@CATNIP_BIN@ run --quiet
+WorkingDirectory=%h
+# A full run on a large account is minutes of API calls, and stats
+# endpoints make catnip wait on GitHub's background computation.
+TimeoutStartSec=2h
+# This is background bookkeeping; never let it compete with foreground work.
+Nice=10
+IOSchedulingClass=idle
+@CATNIP_CONFIG_ENV@
+# gh reads its credentials from the user's config/keyring, so this unit is
+# deliberately a --user unit: a system unit would run as root, find no gh
+# authentication, and fail every night.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

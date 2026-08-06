@@ -1,0 +1,47 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: run `catnip doctor --json` and paste the output below.
+        It reports which config file is in effect, which account the token
+        belongs to, whether traffic endpoints are reachable, and the state
+        of the collected data — which is most of what a diagnosis needs.
+
+        **It contains repository names and your GitHub login. Redact
+        anything you would not post publicly (private repo names in
+        particular).**
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: What did you observe, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: catnip doctor output
+      description: Output of `catnip doctor` (or `--json`), redacted as needed.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The exact commands, in order. If it involves the timer, include
+        `catnip timer status` and the relevant `catnip timer logs` lines.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `catnip version`, plus the commit if running from a clone.
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, Python version, and whether you use systemd, cron, or run manually.

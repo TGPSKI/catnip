@@ -1,0 +1,31 @@
+name: Feature Request
+description: Suggest a new metric, view, or capability
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What question about your repositories can you not answer today?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: |
+        If this needs new data, name the GitHub API endpoint it would come
+        from and whether it requires scopes beyond `repo`. If it is a new
+        view, say which existing CSV feeds it.
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer does this touch?
+      options:
+        - Collection (fetch)
+        - Analysis (CSVs, metrics)
+        - History and totals
+        - TUI views
+        - Automation (timer, retention)
+        - Configuration or onboarding
+        - Not sure

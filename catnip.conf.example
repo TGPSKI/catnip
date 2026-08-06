@@ -1,0 +1,41 @@
+# catnip configuration — KEY=value, '#' comments.
+#
+# Resolution order (first wins): environment > this file > ./catnip.conf >
+# ~/.config/catnip/catnip.conf > built-in defaults.
+# See `catnip config` for what is actually in effect right now.
+
+# Whose repositories to collect. Leave empty to use the authenticated
+# `gh` account. Traffic data requires push access, so this is normally
+# you or an organization you administer.
+CATNIP_OWNER=YOUR-GITHUB-USERNAME
+
+# auto | user | org — auto tries the org endpoint, then the user one.
+CATNIP_OWNER_TYPE=auto
+
+# Everything catnip writes lives here: runs/, stats/, logs/.
+# CATNIP_DATA_DIR=~/.local/share/catnip   # blank = XDG default
+
+# Repo selection. Space-separated glob patterns against the bare repo
+# name. Empty CATNIP_INCLUDE means "everything not excluded".
+CATNIP_INCLUDE=
+CATNIP_EXCLUDE=
+CATNIP_INCLUDE_FORKS=false
+CATNIP_INCLUDE_ARCHIVED=true
+CATNIP_INCLUDE_PRIVATE=true
+
+# Optional endpoints, each costing API calls per repo per run. Turn
+# these off first if a large account runs into the hourly rate limit.
+CATNIP_FETCH_STATS=true
+CATNIP_FETCH_README=true
+CATNIP_FETCH_EVENTS=true
+CATNIP_FETCH_ISSUES=true
+
+# How long run directories survive `catnip prune`. The history store is
+# never pruned — it is the only copy of traffic days older than the ~14
+# GitHub still serves.
+CATNIP_RETAIN_DAYS=30
+
+# Timer cadence (systemd OnCalendar syntax) and jitter. Daily is the
+# floor that keeps the 14-day traffic window from developing holes.
+CATNIP_TIMER_ONCALENDAR=daily
+CATNIP_TIMER_RANDOM_DELAY=1h

@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# catnip — GitHub traffic analytics you own, on a timer.
+#
+# One dispatcher over the pipeline in src/catnip/. Every subcommand
+# resolves its own configuration through catnip.config, so `catnip run`
+# from a systemd timer and `catnip analyze` typed by hand always agree
+# about which account and which data directory are in play.
+set -euo pipefail
+
+HERE="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+ROOT="$(cd -- "$HERE/.." && pwd)"
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+PYTHON="${CATNIP_PYTHON:-python3}"
+
+usage() {
+  cat <<'USAGE'
+catnip — GitHub repository and traffic analytics, collected on a timer.
+
+Usage: catnip <command> [options]
+
+Getting started
+  init            Write a config file (interactive; --owner/--force to script it)
+  doctor          Check tooling, credentials, access, and data. Start here when
+                  anything is wrong. --json for machine-readable output.
+  config          Show the resolved configuration and every path it implies
+
+Collecting
+  run             fetch -> analyze -> history -> totals -> verify (the timer target)
+  fetch           Collect raw API data into a new run directory (--dry-run to preview)
+  analyze         Turn a run's raw JSON into analysis CSVs (default: newest run)
+  history         Ingest runs into the permanent history store
+  totals          Rebuild account-wide totals across every run
+  verify          Assert that every artifact the TUI reads exists
+
+Reading
+  tui             Interactive terminal UI over the newest run
+  view VIEW       Print one view as text (traffic, top, table, anomaly, funnel, …)
+  summary         Print the newest run's summary.md
+  runs            List run directories
+
+Maintenance
+  prune           Delete old runs — never one missing from the history store
+  timer           install | uninstall | status | logs | print | cron
+  version         Print the catnip version
+
+Configuration lives in ./catnip.conf, $CATNIP_CONFIG, or
+~/.config/catnip/catnip.conf. Any CATNIP_* environment variable overrides it.
+USAGE
+}
+
+# A --config anywhere on the line becomes the environment for every stage.
+# `catnip run --config work.conf` has to reach analyze, history, and totals
+# too, not just the fetch it was typed next to — a pipeline where the
+# stages read different config files is the worst kind of wrong, because
+# each stage individually succeeds.
+for ((i = 1; i <= $#; i++)); do
+  if [[ "${!i}" == "--config" ]]; then
+    j=$((i + 1))
+    [[ $j -le $# ]] || { echo "catnip: --config needs a file argument" >&2; exit 2; }
+    export CATNIP_CONFIG="${!j}"
+    break
+  fi
+done
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$cmd" in
+  -h|--help|help) usage ;;
+
+  init)     exec "$PYTHON" -m catnip.init "$@" ;;
+  doctor)   exec "$PYTHON" -m catnip.doctor "$@" ;;
+  config)   exec "$PYTHON" -m catnip.config --show "$@" ;;
+
+  fetch)    exec bash "$ROOT/src/catnip/fetch.sh" "$@" ;;
+  analyze)  exec "$PYTHON" -m catnip.analyze "$@" ;;
+  history)  exec "$PYTHON" -m catnip.history "$@" ;;
+  totals)   exec "$PYTHON" -m catnip.totals "$@" ;;
+  prune)    exec "$PYTHON" -m catnip.prune "$@" ;;
+  timer)    exec "$PYTHON" -m catnip.timer "$@" ;;
+  tui)      exec "$PYTHON" -m catnip.ui "$@" ;;
+  verify)   exec "$PYTHON" -m catnip.doctor --data-only "$@" ;;
+
+  view)
+    view="${1:-traffic}"; [[ $# -gt 0 ]] && shift || true
+    exec "$PYTHON" -m catnip.ui --text --view "$view" "$@" ;;
+
+  runs)
+    exec "$PYTHON" - "$@" <<'PY'
+import sys
+from catnip.config import Config, run_dirs
+cfg = Config.load()
+runs = run_dirs(cfg.runs_dir)
+if not runs:
+    print(f"No runs under {cfg.runs_dir}. Collect one with: catnip run", file=sys.stderr)
+    raise SystemExit(1)
+for run in runs:
+    analyzed = "analyzed" if (run / "analysis").is_dir() else "raw only"
+    print(f"{run.name}  {analyzed}  {run}")
+PY
+    ;;
+
+  summary)
+    exec "$PYTHON" - "$@" <<'PY'
+import sys
+from catnip.config import Config
+run = Config.load().latest_run()
+if run is None:
+    print("No runs yet. Collect one with: catnip run", file=sys.stderr)
+    raise SystemExit(1)
+summary = run / "analysis" / "summary.md"
+if not summary.is_file():
+    print(f"{run.name} has no summary — run: catnip analyze", file=sys.stderr)
+    raise SystemExit(1)
+sys.stdout.write(summary.read_text(encoding="utf-8"))
+PY
+    ;;
+
+  version)
+    exec "$PYTHON" -c "import catnip; print('catnip', catnip.__version__)" ;;
+
+  # The whole pipeline, in dependency order. This is what the systemd timer
+  # runs. `history` must come before `prune` ever deletes anything, which is
+  # why prune is not part of it — pruning is an explicit act, never a side
+  # effect of collecting.
+  run)
+    QUIET=false
+    ARGS=()
+    while (($#)); do
+      case "$1" in
+        --quiet) QUIET=true; shift ;;
+        *) ARGS+=("$1"); shift ;;
+      esac
+    done
+
+    log="$(mktemp)"; trap 'rm -f "$log"' EXIT
+    step() {
+      local label="$1"; shift
+      if $QUIET; then
+        if ! "$@" >"$log" 2>&1; then
+          echo "catnip run: FAILED at '$label'" >&2
+          tail -n 40 "$log" >&2
+          return 1
+        fi
+        tail -n 1 "$log"
+      else
+        echo "==> $label" >&2
+        "$@" || { echo "catnip run: FAILED at '$label'" >&2; return 1; }
+      fi
+    }
+
+    step fetch   bash "$ROOT/src/catnip/fetch.sh" ${ARGS[@]+"${ARGS[@]}"} &&
+    step analyze "$PYTHON" -m catnip.analyze &&
+    step history "$PYTHON" -m catnip.history &&
+    step totals  "$PYTHON" -m catnip.totals &&
+    step verify  "$PYTHON" -m catnip.doctor --data-only
+    ;;
+
+  *)
+    echo "catnip: unknown command '$cmd'" >&2
+    echo >&2
+    usage >&2
+    exit 2 ;;
+esac
