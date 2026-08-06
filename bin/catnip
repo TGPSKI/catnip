@@ -84,6 +84,7 @@ case "$cmd" in
   prune)    exec "$PYTHON" -m catnip.prune "$@" ;;
   timer)    exec "$PYTHON" -m catnip.timer "$@" ;;
   tui)      exec "$PYTHON" -m catnip.ui "$@" ;;
+  report)   exec "$PYTHON" -m catnip.report "$@" ;;
   verify)   exec "$PYTHON" -m catnip.doctor --data-only "$@" ;;
 
   view)

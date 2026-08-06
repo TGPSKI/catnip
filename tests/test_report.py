@@ -167,3 +167,28 @@ class WriteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DispatcherTests(unittest.TestCase):
+    """Every command the help advertises must actually dispatch.
+
+    `report` shipped in the usage text with no matching `case` arm, so
+    `catnip report` printed "unknown command" and then listed itself as
+    available — the same defect as a footer offering a key that does
+    nothing.
+    """
+
+    def test_every_advertised_command_has_a_case_arm(self):
+        import re
+        script = (Path(__file__).resolve().parents[1] / "bin" / "catnip").read_text()
+        usage = script.split("USAGE", 1)[1].split("USAGE", 1)[0]
+        advertised = set()
+        for line in usage.splitlines():
+            m = re.match(r"^  ([a-z-]+)(?:\s{2,}|\s+[A-Z])", line)
+            if m:
+                advertised.add(m.group(1))
+        cases = set()
+        for m in re.finditer(r"^\s*([a-z|-]+)\)", script, re.M):
+            cases.update(part for part in m.group(1).split("|"))
+        missing = sorted(c for c in advertised if c not in cases)
+        self.assertEqual(missing, [], f"advertised but never dispatched: {missing}")
