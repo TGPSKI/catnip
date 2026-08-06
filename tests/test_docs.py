@@ -99,6 +99,16 @@ class ReadmeTests(unittest.TestCase):
         for skill in skills:
             self.assertIn(f"`{skill}`", README, f"{skill} is undocumented")
 
+    def test_every_skill_is_linked_for_claude_code(self):
+        # .claude/skills/<name> symlinks are committed so a fresh clone needs
+        # no setup. catnip-prowl shipped without one and was invisible to the
+        # harness it was written for; `make link-agents` creates them.
+        skills = {p.name for p in (ROOT / ".agents" / "skills").iterdir()
+                  if p.is_dir()}
+        links = {p.name for p in (ROOT / ".claude" / "skills").iterdir()}
+        self.assertEqual(sorted(skills - links), [],
+                         "unlinked skills — run `make link-agents`")
+
     def test_every_advertised_command_is_dispatched(self):
         # The commands table is a second place `catnip <cmd>` is promised;
         # test_report.py pins the usage text against the same case arms.

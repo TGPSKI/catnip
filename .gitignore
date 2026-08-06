@@ -51,6 +51,13 @@ Thumbs.db
 .claude/settings.json
 .cursor/settings.json
 
+# `make link-agents` symlinks each .agents/skills/* into whichever harness
+# the operator uses. The Claude Code links are committed, so a fresh clone
+# has them without running anything; which *other* harness someone uses is
+# their business and does not belong in the repository.
+.cursor/
+.opencode/
+
 # --- Local secrets ---
 .env
 *.pem

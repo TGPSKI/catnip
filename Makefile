@@ -2,12 +2,38 @@ PYTHON ?= python3
 PY      = PYTHONPATH=src $(PYTHON)
 CATNIP  = ./bin/catnip
 
+# Where `make install` puts the `catnip` symlink. bin/catnip resolves its own
+# root through `readlink -f`, so a link from anywhere finds src/ correctly —
+# there is nothing to copy and nothing to rebuild after a `git pull`.
+#
+# Prefer a conventional user bin directory that is ALREADY on PATH, so the
+# install needs no shell-profile edit. Deliberately not chosen: a version
+# manager's shim directory (asdf, mise, rbenv, pyenv). Those are generated —
+# `asdf reshim` rewrites ~/.asdf/shims wholesale — so a hand-placed file
+# there works until the day it silently disappears. Override freely:
+# `make install BINDIR=/usr/local/bin`.
+#
+# A `case` statement cannot be used here: its `)` would close $(shell early
+# and Make would splice the rest of the script into the path.
+BINDIR ?= $(shell \
+  for d in "$$XDG_BIN_HOME" "$$HOME/.local/bin" "$$HOME/bin"; do \
+    [ -n "$$d" ] || continue; \
+    if printf ':%s:' "$$PATH" | grep -qF ":$$d:"; then printf '%s' "$$d"; exit 0; fi; \
+  done; \
+  printf '%s' "$${XDG_BIN_HOME:-$$HOME/.local/bin}")
+
+# Agent harnesses that discover skills at <dir>/skills. `.agents/` is the
+# canonical location in this portfolio; each harness gets a symlink rather
+# than a copy, so a skill is edited in exactly one place.
+HARNESSES ?= .claude .cursor .opencode
+
 # Where a pane checkout lives, for the vendor byte-identity check.
 PANE ?= ../pane
 
 .DEFAULT_GOAL := help
 
 .PHONY: help check quick compile test test-fast lint smoke shellcheck \
+        install uninstall link-agents unlink-agents \
         doctor run fetch analyze history totals tui summary verify prune \
         timer-install timer-status vendor-check clean
 
@@ -56,6 +82,72 @@ vendor-check: ## Diff src/catnip/tui against an upstream pane checkout (PANE=../
 	if [ $$fail -ne 0 ]; then \
 		echo; echo "Re-vendor rather than editing in place:  $(PANE)/tools/vendor.sh \
 $(CURDIR)/src/catnip/tui"; exit 1; fi
+
+# ── install ──────────────────────────────────────────────────────────────────
+
+install: ## Symlink bin/catnip into a user bin dir on PATH (override BINDIR=)
+	@mkdir -p "$(BINDIR)"
+	@ln -sfn "$(CURDIR)/bin/catnip" "$(BINDIR)/catnip"
+	@echo "linked $(BINDIR)/catnip -> $(CURDIR)/bin/catnip"
+	@case ":$$PATH:" in \
+	  *":$(BINDIR):"*) ;; \
+	  *) echo; \
+	     echo "  $(BINDIR) is not on your PATH. Add it:"; \
+	     echo "    export PATH=\"$(BINDIR):\$$PATH\"";; \
+	esac
+	@# A version manager's shims come first on PATH in most setups. If one
+	@# already answers to `catnip`, the link just installed is shadowed and
+	@# the operator would otherwise debug a stale binary.
+	@found=$$(command -v catnip 2>/dev/null || true); \
+	if [ -n "$$found" ] && [ "$$found" != "$(BINDIR)/catnip" ]; then \
+	  echo; \
+	  echo "  WARNING: '$$found' comes first on PATH and shadows this install."; \
+	  echo "  Remove it, or put $(BINDIR) earlier in PATH."; \
+	fi
+	@command -v gh >/dev/null 2>&1 || { \
+	  echo; echo "  catnip needs the GitHub CLI: https://cli.github.com"; }
+
+uninstall: ## Remove the BINDIR symlink (never touches collected data)
+	@if [ -L "$(BINDIR)/catnip" ]; then \
+	  rm "$(BINDIR)/catnip"; echo "removed $(BINDIR)/catnip"; \
+	elif [ -e "$(BINDIR)/catnip" ]; then \
+	  echo "$(BINDIR)/catnip is not a symlink — leaving it alone"; exit 1; \
+	else echo "nothing at $(BINDIR)/catnip"; fi
+
+# ── agent harnesses ──────────────────────────────────────────────────────────
+# One canonical .agents/skills/, linked into whichever harness you use, so a
+# skill has one copy on disk. Copies drift: the whole point of shipping the
+# skills beside the tool is that they describe *this* checkout's commands.
+
+# Per skill, not one link for the directory: a harness directory usually
+# holds other things too (settings, other projects' skills), so claiming
+# the whole `skills/` name would either fail or bury them.
+link-agents: ## Symlink each .agents/skill into .claude/.cursor/.opencode (HARNESSES=...)
+	@for dir in $(HARNESSES); do \
+	  mkdir -p "$$dir/skills"; \
+	  for skill in .agents/skills/*/; do \
+	    name=$$(basename "$$skill"); \
+	    target="$$dir/skills/$$name"; \
+	    if [ -L "$$target" ]; then \
+	      echo "ok    $$target"; \
+	    elif [ -e "$$target" ]; then \
+	      echo "SKIP  $$target exists and is not a symlink"; \
+	    else \
+	      ln -s "../../$$skill" "$$target" && echo "link  $$target"; \
+	    fi; \
+	  done; \
+	done
+	@echo
+	@echo "Skills live in .agents/skills/ and are edited there."
+
+unlink-agents: ## Remove the harness symlinks (leaves .agents/ untouched)
+	@for dir in $(HARNESSES); do \
+	  for skill in .agents/skills/*/; do \
+	    target="$$dir/skills/$$(basename "$$skill")"; \
+	    if [ -L "$$target" ]; then rm "$$target"; echo "removed $$target"; fi; \
+	  done; \
+	  rmdir "$$dir/skills" "$$dir" 2>/dev/null || true; \
+	done
 
 # ── operating catnip ─────────────────────────────────────────────────────────
 # Thin wrappers. `bin/catnip` is the real interface; these exist so a
