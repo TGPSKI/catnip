@@ -263,9 +263,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timeframe cross-product that `test_tui_layout` already asserts offline
   against a character grid, ~400x faster. The pty suite now covers only
   what a terminal can uniquely prove: that curses does not raise.
+- **`tests/test_docs.py` pins the claims a machine can check.** The CSV
+  count against a real analysis run, `doctor.TUI_CSVS` against the number
+  spelled in `docs/metrics.md`, every view key against `VIEWS`, every
+  shipped skill against the README, and every advertised command against
+  the dispatcher. Documentation drifts precisely because nothing fails
+  when it does: `docs/metrics.md` described sixteen CSVs and a schema-1
+  store, and the README claimed two agent skills while three shipped.
+- **`docs/metrics.md` rewritten for the store-first architecture.** It
+  documented the run-scoped CSV scores and stopped there, which was the
+  whole of the derived layer when it was written and is now the smaller
+  half. It covers `derive.py`'s definitions — the meanAD fallback and
+  materiality floor, campaign collapsing, the withheld-and-renormalized
+  audience weights, Laplace-smoothed intent, attribution tiers,
+  residualized coupling — and the schema-2 store with its events,
+  referrers and reconstructed star/fork series.
 
 ### Fixed
 
+- **`esc` quit the application from inside a focused pane.** `[space]`
+  and `[tab]` move *into* a pane — the funnel's top-pages list, the
+  anomaly account-events table, the traffic repo lists — but pane focus
+  was not a layer on the escape stack, so escape fell through to the
+  framework's quit and closed the TUI from a screen the operator was
+  still reading. Escape now unwinds one layer at a time: overlay, search,
+  pane focus, then quit. Found only because a demo recording exited
+  mid-scene and the remaining scripted keys landed at the shell prompt.
+- **Three of five detail views advertised a truncated key hint** —
+  "[j/k] next findin", "next pai", "next rep". Each call site carried its
+  own `max_x - <literal>` offset and the literals had drifted from the
+  strings they positioned; the column is now derived from the text. The
+  funnel's explainer had the same fault from the other side, one sentence
+  long enough that 150 columns cut it at "so it ove"; its clauses are now
+  dropped whole, and the rolling-14d caveat moved into the title because
+  it was the first clause to be shed and it is the one that changes how
+  every number on the screen is read.
 - **`catnip report` was advertised in the help and never dispatched** —
   it printed "unknown command" and then listed itself among the available
   commands. Found by running `catnip-prowl`, whose first phase is to run

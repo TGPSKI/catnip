@@ -8,14 +8,15 @@ with timestamps, releases, pull requests, languages, commit activity —
 for every repository you own or administer. Stdlib Python and `gh`, no
 install step, no service to sign up for, no data leaving your machine.
 
-<img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over 98 repositories: the traffic view opens on daily views and clones as bar charts with top-views and top-clones lists beneath; the audience view classifies each repo as audience, mixed, crawler or low-signal from its clones-per-unique-visitor ratio, showing one repo cloned 38 times per unique visitor labelled crawler; pressing ? opens a derivation overlay giving the formula, weights, thresholds and withheld components behind that score; the deltas view shows signed windowed change and a per-day rate per repo; the anomaly view is a repo-by-day heatmap above a sortable list of account events, and pressing tab then space opens one of them - the 30th of July, five repos, leather spiking to a modified z-score of 81.6 on 308 clones against a median of 6, attributed to 8 commits that day; the repo table lists momentum, audience and depth columns; and pressing space on a repo row opens its drilldown, with daily views and clones charts annotated underneath by release, push and anomaly markers on the days that caused them, unique cloners against unique visitors, and a CONFLICT flag where the clone-intent score reads developer while the audience classification reads crawler"/>
+<img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over 98 repositories. The traffic view opens on daily views and clones as bar charts. The audience view classifies each repo as audience, mixed, crawler or low-signal from its clones-per-unique-visitor ratio, and pressing ? opens a derivation overlay giving the formula, weights, thresholds and withheld components behind that score. The attribution view lists what moved and the release or push that plausibly caused it, tiered direct, coupled, account, dip, unexplained and no-effect; space opens one finding in full - a dip on the 6th of August with no cause recorded in the store, its daily clone series, the median, MAD, mean absolute deviation and z-score the tier rests on, and what else was true that day. The deltas view shows signed windowed change and per-day rate, and space opens momentum: the daily level, the day-over-day derivative around a zero line, and a fitted slope reading clones falling 1.15 per day and decelerating. The anomaly view is a repo-by-day heatmap above a sortable list of account events, and tab then space opens one - the 30th of July, five repos, leather spiking to a modified z-score of 81.6 on 308 clones against a median of 6, attributed to 8 commits that day. The funnel view shades each repo by its own busiest content category with a depth column, and space opens that repo's actual pages with views and uniques. The demo closes on the repo table and a repo drilldown, showing daily charts annotated by release, push and anomaly markers on the days that caused them, unique cloners against unique visitors, and a CONFLICT flag where the clone-intent score reads developer while the audience classification reads crawler."/>
 
 *`catnip tui` over one real account's 98 public repositories — the
 audience view separating people from fetcher fleets, `[?]` explaining
-exactly how that score was computed, windowed deltas, the anomaly
-heatmap with its account-event list, one event opened in full, and
-`[space]` opening a repo's drilldown. Everything here is on disk after
-one `catnip run`.*
+exactly how that score was computed, a movement attributed to its cause
+and the statistics behind that call, momentum, the anomaly heatmap with
+one account event opened in full, the content funnel, and `[space]`
+opening a repo's drilldown. Everything here is on disk after one `catnip
+run`.*
 
 ## Why it exists
 
@@ -107,7 +108,7 @@ Everything lands under `CATNIP_DATA_DIR` (default
 ```
 runs/20260805T031722Z/
   raw/          one JSON body per endpoint per repo, as returned
-  analysis/     17 CSVs + summary.md — the schema everything else reads
+  analysis/     22 CSVs + summary.md — the schema everything else reads
   reports/      which repos were skipped, and which denied traffic
   manifest.json owner, counts, rate-limit spend, duration
 stats/
@@ -222,7 +223,7 @@ macOS/launchd and for what to do when the timer silently stops firing.
 
 ## For agents
 
-`.agents/skills/` ships two skills, usable by any agent that reads
+`.agents/skills/` ships three skills, usable by any agent that reads
 `SKILL.md` files:
 
 - **`catnip-onboarding`** — a directed workflow that takes a new user
@@ -232,6 +233,9 @@ macOS/launchd and for what to do when the timer silently stops firing.
   resolve coordinates first (which config, which account, which run),
   build a timeline, generate competing hypotheses, and identify the one
   piece of evidence that discriminates between them.
+- **`catnip-prowl`** — the analysis pass described above: read the
+  deterministic report, then hunt for what it did not think to ask,
+  tagging every claim `measured`, `inferred` or `speculative`.
 
 `catnip doctor --json` exists so an agent can read the whole environment
 in one call. [AGENTS.md](AGENTS.md) is the router for working on catnip
