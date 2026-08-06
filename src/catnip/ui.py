@@ -1031,6 +1031,18 @@ class AnalyticsTUI(TuiApp):
         return [f'No {what} in the newest run.',
                 '', 'Run  catnip analyze  to rebuild it.']
 
+    def _put_right(self, y, max_x, text, attr=None):
+        """Right-align text inside the drawable area.
+
+        Every call site used to carry its own `max_x - <literal>`, and three
+        of five had drifted past `_put`'s right-edge guard — the detail views
+        advertised "[j/k] next findin" and "next pai". Deriving the column
+        from the string is the only version that cannot rot when the hint
+        text is edited.
+        """
+        self._put(y, max(1, max_x - len(text) - 2), text,
+                  self.curses.A_DIM if attr is None else attr)
+
     def _put_lines(self, y, lines, max_x, indent=3):
         for i, line in enumerate(lines):
             self._put(y + i, indent, line[: max_x - indent - 1], self.curses.A_DIM)
@@ -2038,8 +2050,7 @@ class AnalyticsTUI(TuiApp):
         day = self.drilldown_event
         self._put(2, 1, f' account event {_short_date(day)} ',
                   curses.color_pair(5) | self.curses.A_BOLD)
-        self._put(2, max_x - 30, '[space/esc] back  [j/k] next',
-                  self.curses.A_DIM)
+        self._put_right(2, max_x, '[space/esc] back  [j/k] next event')
         x = 1
         for name, pair in (('extreme', 4), ('significant', 2), ('minor', 3)):
             self._put(4, x, BLOCK, curses.color_pair(pair))
@@ -2351,8 +2362,7 @@ class AnalyticsTUI(TuiApp):
         self._put(y, 1, f' {row["repo"]} \u2014 {_short_date(row["day"])} ',
                   curses.color_pair(5) | curses.A_BOLD)
         self._put(y, len(row['repo']) + len(row['day']) + 8, row['tier'], tier_attr)
-        self._put(y, max_x - 36, '[space/esc] back  [j/k] next finding',
-                  self.curses.A_DIM)
+        self._put_right(y, max_x, '[space/esc] back  [j/k] next finding')
         y += 1
 
         cause = (f'{row["cause"]} {row["detail"]}'.strip() if row['cause']
@@ -2489,7 +2499,7 @@ class AnalyticsTUI(TuiApp):
         win = TF_LABEL.get(tf, 'window')
 
         self._put(2, 1, f' {repo} \u2014 momentum ', curses.color_pair(5) | curses.A_BOLD)
-        self._put(2, max_x - 34, '[space/esc] back  [j/k] next repo', self.curses.A_DIM)
+        self._put_right(2, max_x, '[space/esc] back  [j/k] next repo')
         if not days:
             self._put(4, 3, 'No daily store yet.', self.curses.A_DIM)
             return
@@ -2563,7 +2573,7 @@ class AnalyticsTUI(TuiApp):
         last = avail + 1
 
         self._put(2, 1, f' {a} <-> {b} ', curses.color_pair(5) | self.curses.A_BOLD)
-        self._put(2, max_x - 32, '[space/esc] back  [j/k] next pair', self.curses.A_DIM)
+        self._put_right(2, max_x, '[space/esc] back  [j/k] next pair')
         if not pair or not days:
             self._put(4, 3, 'This pair is not coupled in the current window.',
                       self.curses.A_DIM)
@@ -2832,13 +2842,30 @@ class AnalyticsTUI(TuiApp):
         rows = self._funnel_repo_rows()
         gname, _gk, gnat = self.FUNNEL_SORT_KEYS[self.funnel_sort]
         garrow = self.sort_arrow(gnat != self.sort_flip.get('funnel', False))
-        self._put(2, 1, f'Funnel \u2014 content mix and depth  [f]ilter: {filt}  '
+        # "rolling 14d" belongs in the title, not in the droppable tail of
+        # the explainer: it is the one caveat that changes how every number
+        # on screen is read, and at 150 columns the explainer was shedding
+        # exactly that clause.
+        self._put(2, 1, f'Funnel \u2014 content mix and depth (rolling 14d)  '
+                  f'[f]ilter: {filt}  '
                   f'[sort: {gname} {garrow}]'
                   + ('' if self.funnel_pane else '   [tab] to top pages'),
                   curses.color_pair(6) | self.curses.A_BOLD)
-        self._put(3, 1, 'Row = one repo, shaded by share of ITS OWN busiest category. '
-                  'depth = (docs+code+tree)/home; * = no home views. uniq sums per-page '
-                  'uniques, so it over-counts ([?]). Rolling 14d.', self.curses.A_DIM)
+        # One sentence long enough that 150 columns cut it mid-word ("uniq
+        # sums per-page uniques, so it ove"). The clauses are independent,
+        # so drop whole ones from the tail until the line fits rather than
+        # letting _put halve the last; [?] carries the full derivation and
+        # the footer advertises it.
+        clauses = ['Row = one repo, shaded by its OWN busiest category',
+                   'depth = (docs+code+tree)/home',
+                   '* = no home views',
+                   'uniq sums per-page uniques, so it over-counts']
+        line = clauses[0]
+        for clause in clauses[1:]:
+            if len(line) + len(clause) + 3 > max_x - 2:
+                break
+            line += '. ' + clause
+        self._put(3, 1, line + '.', self.curses.A_DIM)
         # The ramp was four unexplained fill weights. Naming the steps is
         # the difference between a texture and a measurement.
         x = 1
@@ -3056,8 +3083,7 @@ class AnalyticsTUI(TuiApp):
         self._put(2, 1, f' {repo} ', curses.color_pair(5) | self.curses.A_BOLD)
         self._put(2, len(repo) + 4, f'{win}   [{label}]{note}',
                   curses.color_pair(pair) if pair else self.curses.A_DIM)
-        self._put(2, max_x - 36, '[space/esc] back  [j/k] next repo',
-                  self.curses.A_DIM)
+        self._put_right(2, max_x, '[space/esc] back  [j/k] next repo')
 
         if not days:
             self._put(4, 3, 'No daily store yet — run  catnip history  first.',

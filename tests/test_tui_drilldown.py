@@ -788,3 +788,128 @@ class EscapeStackTests(unittest.TestCase):
         app.handle_key(27)
         self.assertEqual(app.funnel_pane, 0)
         self.assertTrue(app.handle_key(27))
+
+
+class RightAlignedHintTests(unittest.TestCase):
+    """A detail view's back/next hint must survive to its last character.
+
+    Each call site carried its own `max_x - <literal>` offset, and three of
+    the five had drifted past `_put`'s right-edge guard: the attribution
+    detail advertised "[j/k] next findin" and the pair detail "next pai".
+    Nothing failed — the hint is decoration to every assertion in this file
+    — so it shipped into a demo recording. The offset is now derived from
+    the string; this test is what stops the literals coming back.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+            history.ingest(root / "runs", root / "stats" / "history", "testuser")
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def _states(self, cols):
+        """(name, app, render) for every view that draws a right-aligned hint."""
+        out = []
+
+        app = build_tui(self.data, 40, cols, "attribution")
+        app.handle_key(ord(" "))
+        out.append(("finding", app, app._render_finding_detail))
+
+        app = build_tui(self.data, 40, cols, "table")
+        app.handle_key(FakeCurses.KEY_ENTER)
+        out.append(("drilldown", app, app._render_drilldown))
+
+        app = build_tui(self.data, 40, cols, "deltas")
+        app.handle_key(ord(" "))
+        out.append(("momentum", app, app._render_momentum_detail))
+
+        app = build_tui(self.data, 40, cols, "correlation")
+        app.handle_key(ord(" "))
+        out.append(("pair", app, app._render_pair_detail))
+
+        app = build_tui(self.data, 40, cols, "anomaly")
+        app.anomaly_pane = 0
+        app.handle_key(ord(" "))
+        out.append(("event", app, app._render_event_detail))
+        return out
+
+    def test_no_hint_is_clipped_at_the_right_edge(self):
+        # 150 is the demo geometry; the others are ordinary terminals.
+        for cols in (150, 120, 100):
+            for name, app, render in self._states(cols):
+                app.writes = []
+                render(37, cols)
+                hints = [(x, t) for _y, x, t in app.writes
+                         if t.startswith("[space/esc] back")]
+                if not hints:
+                    continue
+                for x, text in hints:
+                    self.assertTrue(
+                        text.rstrip().endswith(("event", "finding", "repo", "pair")),
+                        f"{name} @ {cols}: hint clipped to {text!r}")
+                    self.assertLess(x + len(text), cols,
+                                    f"{name} @ {cols}: hint runs off the edge")
+
+    def test_a_narrow_terminal_still_places_the_hint_on_screen(self):
+        for name, app, render in self._states(60):
+            app.writes = []
+            render(37, 60)
+            for _y, x, _t in app.writes:
+                self.assertGreaterEqual(x, 0, name)
+
+
+class FunnelExplainerTests(unittest.TestCase):
+    """The funnel's explainer must end in a whole word at any width.
+
+    At 150 columns it read "... uniq sums per-page uniques, so it ove" —
+    _put clipped the sentence mid-word, which reads as a rendering fault
+    rather than as a legend. Clauses are dropped whole instead.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+            history.ingest(root / "runs", root / "stats" / "history", "testuser")
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def _explainer(self, cols):
+        app = build_tui(self.data, 40, cols, "funnel")
+        app.writes = []
+        app._render_funnel_view(37, cols)
+        return [t for y, _x, t in app.writes if y == 3 and t.startswith("Row = ")]
+
+    def test_it_is_never_cut_mid_word(self):
+        for cols in (200, 150, 120, 100, 80, 60):
+            got = self._explainer(cols)
+            self.assertEqual(len(got), 1, f"{cols}: explainer missing")
+            self.assertTrue(got[0].endswith("."),
+                            f"{cols}: clipped to {got[0]!r}")
+            self.assertLess(len(got[0]) + 1, cols, cols)
+
+    def test_the_widest_terminal_gets_every_clause(self):
+        self.assertIn("over-counts", self._explainer(200)[0])
+
+    def test_the_rolling_window_caveat_survives_the_demo_width(self):
+        # It lives in the title precisely so it cannot be dropped: at 150
+        # columns it was the first clause the explainer shed.
+        app = build_tui(self.data, 40, 150, "funnel")
+        app.writes = []
+        app._render_funnel_view(37, 150)
+        self.assertTrue(any("rolling 14d" in t for _y, _x, t in app.writes),
+                        "the funnel no longer says it ignores the timeframe")
