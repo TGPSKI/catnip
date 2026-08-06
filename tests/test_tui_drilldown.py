@@ -733,3 +733,58 @@ class FindingDetailTests(unittest.TestCase):
             a.render(40, 150)
             text = " ".join(t for _y, _x, t in a.writes)
             self.assertIn("context", text)
+
+
+class EscapeStackTests(unittest.TestCase):
+    """Escape unwinds one layer at a time, and pane focus is a layer.
+
+    [space]/[tab] move INTO a pane, so escape has to move out of one. It
+    used to fall through to the framework's quit: pressing escape to leave
+    the funnel's pages pane closed the application from a screen the
+    operator was still reading. Found by a demo recording, where the TUI
+    exited mid-scene and the remaining scripted keys landed at the shell.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name)
+        run = make_run(root)
+        with redirect_stdout(io.StringIO()):
+            analyze_github(run, strict=True)
+            history.ingest(root / "runs", root / "stats" / "history", "testuser")
+        cls.data = AnalyticsData(run)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_escape_leaves_a_focused_pane_instead_of_quitting(self):
+        cases = (
+            ("funnel", "funnel_pane", 1, 0),
+            ("anomaly", "anomaly_pane", 0, 1),
+            ("traffic", "traffic_pane", 1, 0),
+        )
+        for view, attr, focused, unfocused in cases:
+            app = build_tui(self.data, 40, 150, view)
+            setattr(app, attr, focused)
+            self.assertFalse(app.handle_key(27),
+                             f"{view}: escape quit from a focused pane")
+            self.assertEqual(getattr(app, attr), unfocused, view)
+
+    def test_escape_still_quits_when_there_is_nothing_to_back_out_of(self):
+        app = build_tui(self.data, 40, 150, "table")
+        self.assertTrue(app.handle_key(27))
+
+    def test_escape_unwinds_deepest_first(self):
+        app = build_tui(self.data, 40, 150, "funnel")
+        app.funnel_pane = 1
+        app.search = "alpha"
+        app.overlay = True
+        app.handle_key(27)
+        self.assertFalse(app.overlay)
+        app.handle_key(27)
+        self.assertEqual(app.search, "")
+        app.handle_key(27)
+        self.assertEqual(app.funnel_pane, 0)
+        self.assertTrue(app.handle_key(27))

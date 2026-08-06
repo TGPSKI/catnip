@@ -628,6 +628,23 @@ class AnalyticsTUI(TuiApp):
             if self.search:
                 self.search = ''
                 return False
+            # Pane focus is a layer too. [space]/[tab] move INTO a pane, so
+            # escape has to move out of one — it is the key everyone reaches
+            # for, whatever the footer advertises. Without this it fell
+            # through to the framework's quit and closed the app from a
+            # screen the operator was still reading. Caught by a demo take:
+            # the recorder pressed escape to leave the funnel's pages pane
+            # and the TUI exited mid-scene.
+            if self.view == 'funnel' and self.funnel_pane:
+                self.funnel_pane = 0
+                return False
+            if self.view == 'anomaly' and self.anomaly_pane == 0:
+                self.anomaly_pane = 1
+                return False
+            if self.view == 'traffic' and self.traffic_pane:
+                self.traffic_pane = 0
+                self.cursor('traffic').reset()
+                return False
         if key == ord('?'):
             self.overlay = not self.overlay
             return False
