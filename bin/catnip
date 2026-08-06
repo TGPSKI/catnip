@@ -38,6 +38,8 @@ Reading
   view VIEW       Print one view as text (traffic, audience, table, deltas,
                   anomaly, profile, correlation, funnel, lang,
                   attribution)
+  report          Write a deterministic markdown analysis of the store
+                  (--stdout to print, --force to bypass the interval guard)
   summary         Print the newest run's summary.md
   runs            List run directories
 

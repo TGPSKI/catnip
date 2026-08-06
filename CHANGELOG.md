@@ -28,6 +28,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opens an event detail screen: which repos moved that day, each one's
   |Z|, value and median, and whatever release or push it followed. Each
   row carries a colour block in the severity of its worst repo.
+- **`catnip report` — a deterministic markdown analysis of the store.**
+  Headline totals and change, biggest movers with trend, what moved and
+  what caused it, account events, audience, clone intent, coupled repos,
+  content depth, and an explicit section on what it cannot tell you.
+  Every figure is tagged `measured` and the same store plus timeframe
+  produces byte-identical output. Writes to
+  `<data>/reports/<UTC stamp>/report.md` with a `meta.json` recording the
+  store's latest day, so a report is attributable.
+- **An interval guard with the store as the primary gate.** It refuses to
+  write again until the store's newest day advances — catnip collects
+  daily, so two reports over identical data are one finding printed
+  twice. A one-day clock floor applies only when an older report did not
+  record which day it covered; when the store can answer, the clock is
+  not consulted, because a new day is new information an hour later as
+  much as a week later. `--force` overrides for prototyping.
+- **`catnip-prowl` agent skill.** Runs the deterministic report, then
+  hunts: forms hypotheses, tests them against the raw data, and reports
+  refutations as well as findings. Its output is a separate `prowl.md`
+  beside the reproducible `report.md`, and every claim is tagged
+  `measured`, `inferred` or `speculative`. A reader must never have to
+  guess whether a sentence is arithmetic or an agent's idea.
 - **Attribution view (`5`), replacing code frequency.** value <-> cause
   <-> repo: what moved, and the release or push that plausibly caused it,
   with the paired form (a cause in one repo explaining movement in a

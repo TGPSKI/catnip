@@ -84,6 +84,7 @@ repositories is a worse outcome than a failed command.
 | `catnip totals` | Rebuild account-wide totals |
 | `catnip verify` | Assert every artifact the TUI reads exists |
 | `catnip tui` / `view` | Interactive UI / one view as text |
+| `catnip report` | Deterministic markdown analysis of the store (`--stdout`, `--force`) |
 | `catnip summary` | The newest run's `summary.md` |
 | `catnip prune` | Retention, dry-run by default |
 | `catnip timer` | `install` · `status` · `logs` · `uninstall` · `print` · `cron` |
@@ -170,6 +171,26 @@ The drawing layer is [pane](https://github.com/TGPSKI/pane), vendored
 byte-identically into `src/catnip/tui/`. It knows what a terminal is;
 `src/catnip/derive.py` knows what a number means; `src/catnip/ui.py`
 knows what a repository is.
+
+## Analysis
+
+`catnip report` writes a markdown analysis of the durable store to
+`<data>/reports/<UTC stamp>/report.md`: headline totals and change,
+biggest movers with their trend, what moved and what caused it, account
+events, audience classification, clone intent, coupled repos, content
+depth — and an explicit section on what it **cannot** tell you.
+
+It is deterministic. The same store and timeframe produce byte-identical
+markdown, and every figure is tagged `measured`. It refuses to write
+again until the store's newest day advances, because catnip collects
+daily and two reports over identical data are one finding printed twice;
+`--force` overrides.
+
+The [`catnip-prowl`](.agents/skills/catnip-prowl/SKILL.md) agent skill
+builds on it — running the deterministic report first, then forming and
+testing its own hypotheses to find what strict arithmetic gates out. Its
+findings are tagged `inferred` or `speculative` and written to a separate
+file, so you can always tell an agent's idea from the arithmetic.
 
 ## Automation
 
