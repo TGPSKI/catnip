@@ -83,7 +83,17 @@ def build_tui(data, rows, cols, view):
     # One definition of the per-view defaults, shared with the real app.
     app.init_view_state()
     app.writes = []
-    app._put = lambda y, x, text, attr=0: app.writes.append((y, x, str(text)))
+
+    def put(y, x, text, attr=0):
+        # Clip exactly like TuiApp._put. An unbounded recorder is not a
+        # terminal: it silently accepted a scrollbar drawn at max_x - 1,
+        # which the real _put rejects (`x >= max_x - 1`), so every offline
+        # render showed a scrollbar that no user ever saw.
+        if y < 0 or y >= rows or x >= cols - 1:
+            return
+        app.writes.append((y, x, str(text)[: cols - 1 - x]))
+
+    app._put = put
     return app
 
 

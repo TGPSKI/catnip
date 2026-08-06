@@ -858,13 +858,17 @@ class AnalyticsTUI(TuiApp):
 
     def _scrollbar(self, top, height, total, offset, max_x):
         """A scrollbar at the right edge; nothing when the list fits."""
-        scrollbar(self._put, self.curses, top, height, max_x - 1, total, offset,
+        # max_x - 2, not max_x - 1: _put rejects any x >= max_x - 1, so a
+        # bar at the last column is silently dropped and the operator gets
+        # no overflow indication at all.
+        scrollbar(self._put, self.curses, top, height, max_x - 2, total, offset,
                   attr=self.curses.color_pair(6))
 
     def _mark_selected(self, y, max_x, selected):
         """Flag the right edge of a selected row."""
         if selected:
-            self._put(y, max_x - 2, self.SELECT_MARK,
+            # Left of the scrollbar column, which owns max_x - 2.
+            self._put(y, max_x - 4, self.SELECT_MARK,
                       self.curses.color_pair(5) | self.curses.A_BOLD)
 
     def _traffic_lists(self):

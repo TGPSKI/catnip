@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   depth. Pure functions, offline-testable, and the home of `DERIVATIONS`:
   the `[?]` overlay text lives beside the formula it describes, so an
   explanation cannot drift from the code that produced the number.
-- **Repo drilldown (`[enter]` on any repo row).** A full-screen view of
+- **Repo drilldown (`[space]` on any repo row; `[enter]` also opens).** A full-screen view of
   one repo: dual daily chart with inline anomaly markers and release/push
   rules drawn under the days that caused a spike, the uniques track with
   the audience ratio, the repo's own funnel mix and depth, its coupled
@@ -94,6 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sections are spaced. Funnel columns carry readable labels (`home`,
   `docs`, `tree`) instead of four-character truncations of their internal
   names, and its selection no longer inverts a whole row of grid cells.
+- **The scrollbars never rendered.** They were drawn at `max_x - 1`, and
+  `TuiApp._put` rejects any `x >= max_x - 1`, so every one was silently
+  dropped. The offline layout harness did not reproduce it because its
+  fake `put` was unbounded — it now clips exactly like the real one, so a
+  test can no longer pass against a canvas no terminal has.
 - **`summary.md` was still headed "sh-github Analytics"** — the
   predecessor's name, written into every run since the rename.
 - **The owner fallback was the literal string `github`**, which reads
