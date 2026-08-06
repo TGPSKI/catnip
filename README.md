@@ -130,7 +130,7 @@ with `s`, and quit with `q`.
 | `2` | audience | is this repo's traffic people or fetchers? |
 | `3` | table | every repo, sortable by momentum, audience, depth, stars-per-visitor |
 | `4` | lang | bytes by language |
-| `5` | freq | weekly commits |
+| `5` | attribution | what moved, and the release or push that plausibly caused it |
 | `6` | deltas | what changed this window versus last, and the per-day rate |
 | `7` | anomaly | repo × day heatmap, with simultaneous spikes folded into one account event |
 | `8` | profile | clone intent — how many of the people who looked, cloned |

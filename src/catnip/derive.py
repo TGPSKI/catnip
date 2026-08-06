@@ -581,6 +581,144 @@ def severity(z):
     return None
 
 
+# ---- attribution: value <-> cause <-> repo -----------------------------------
+
+#: A release or push on day D is allowed to explain movement on D..D+LAG.
+#: Traffic from an announcement arrives the same afternoon and trails off
+#: over a day or two; beyond that the link is a story, not evidence.
+ATTRIBUTION_LAG = 2
+
+#: Confidence tiers, strongest first. The label is the point: an inferred
+#: cause and an observed one must never render identically.
+ATTRIBUTION_TIERS = ("direct", "coupled", "account", "dip", "unexplained",
+                     "no-effect")
+
+
+def _causes_by_day(store, repo, days):
+    """{day: [(kind, detail)]} for one repo — releases and pushes."""
+    events = events_in(store, repo, days)
+    out = defaultdict(list)
+    for day, tag in events["releases"]:
+        out[day].append(("release", tag))
+    for day, n in sorted(events["pushes"].items()):
+        out[day].append(("push", f"{n} commit(s)"))
+    return out
+
+
+def attribution(store, timeframe, end=None, funnel_rows=None):
+    """Rows tying movement to whatever plausibly caused it.
+
+    Built as a timeline rather than an anomaly table on purpose. A brand
+    new store has no variance to score, no previous window to difference
+    and no aligned days to correlate — but GitHub returns a repo's whole
+    release history on the first fetch, so "here is what you shipped and
+    what the traffic did around it" is answerable from run one. The
+    statistical tiers layer on as the store deepens; the view is never
+    empty because it never depended on them.
+
+    Every row carries its tier, because a cause observed in the same repo
+    and a cause inferred from a coupled one are different claims.
+    """
+    days = window(store, timeframe, end)
+    if not days:
+        return {"days": days, "rows": [], "unexplained": []}
+
+    grid = anomalies(store, timeframe, end)
+    cells = dict(grid["rows"])
+    campaigns = grid["campaigns"]
+    index = {day: i for i, day in enumerate(days)}
+    causes = {repo: _causes_by_day(store, repo, days) for repo in cells}
+
+    # Coupling is the most expensive input and the first to be unavailable
+    # on a young store; ask for it once and tolerate its absence.
+    couples = {}
+    if len(days) >= COUPLE_MIN_DAYS:
+        for pair in coupled(store, timeframe, end)["pairs"]:
+            # Positive coupling only. An anti-correlated pair moves in
+            # OPPOSITE directions, so a release in one is evidence against
+            # a same-direction spike in the other, not for it — using |r|
+            # here credited a repo's spike to a partner it moves away from.
+            if pair["r"] >= 0.5:
+                couples.setdefault(pair["a"], []).append((pair["b"], pair["r"]))
+                couples.setdefault(pair["b"], []).append((pair["a"], pair["r"]))
+
+    rows = []
+    claimed = set()
+
+    def cause_near(repo, day):
+        """A cause in `repo` on day..day-LAG that could explain `day`."""
+        i = index[day]
+        for back in range(ATTRIBUTION_LAG + 1):
+            j = i - back
+            if j < 0:
+                continue
+            for kind, detail in causes.get(repo, {}).get(days[j], []):
+                return kind, detail, back
+        return None
+
+    # 1. Movement first, each row labelled by the strongest cause found.
+    for repo, repo_cells in cells.items():
+        for i, cell in enumerate(repo_cells):
+            if not cell or not cell["material"]:
+                continue
+            day = days[i]
+            row = {"day": day, "repo": repo, "metric": cell["metric"],
+                   "value": cell["value"], "median": cell["median"],
+                   "z": cell["z"], "dir": cell["dir"], "via": None}
+            # Only a spike gets a cause. A release does not cause a drop —
+            # the drop after one is decay, and labelling it "release" reads
+            # as though shipping cost you traffic. Dips are shown, and left
+            # unattributed.
+            if cell["dir"] == "dip":
+                row.update(tier="dip", cause=None, detail="", lag=None)
+                rows.append(row)
+                continue
+            own = cause_near(repo, day)
+            if own:
+                kind, detail, lag = own
+                row.update(tier="direct", cause=kind, detail=detail, lag=lag)
+                claimed.add((repo, day))
+            else:
+                partner = next(
+                    ((other, r, cause_near(other, day))
+                     for other, r in couples.get(repo, [])
+                     if cause_near(other, day)), None)
+                if partner:
+                    other, r, (kind, detail, lag) = partner
+                    # Name whose cause this is. Rendering the partner's
+                    # release in this row's cause column reads as though
+                    # THIS repo shipped it.
+                    row.update(tier="coupled", cause=f"{kind}\u2197",
+                               detail=f"{other}: {detail}", lag=lag, via=(other, r))
+                elif repo in campaigns.get(day, ()):
+                    row.update(tier="account", cause=None,
+                               detail=f"{len(campaigns[day])} repos moved together",
+                               lag=None)
+                else:
+                    row.update(tier="unexplained", cause=None, detail="", lag=None)
+            rows.append(row)
+
+    # 2. Causes that produced no measurable movement. On a young store this
+    #    is most of the view, and it is still the honest answer to "what did
+    #    I ship and what happened" — silence is a result.
+    for repo, by_day in causes.items():
+        for day, entries in by_day.items():
+            if (repo, day) in claimed:
+                continue
+            i = index[day]
+            after = series(store, repo, "clones", days[i:i + ATTRIBUTION_LAG + 1])
+            rows.append({"day": day, "repo": repo, "metric": "clones",
+                         "value": sum(after), "median": None, "z": 0.0,
+                         "dir": "flat", "tier": "no-effect",
+                         "cause": entries[0][0], "detail": entries[0][1],
+                         "lag": None, "via": None})
+
+    rows.sort(key=lambda r: (r["day"], -abs(r["z"]), r["repo"]), reverse=True)
+    return {"days": days, "rows": rows,
+            "unexplained": [r for r in rows if r["tier"] == "unexplained"],
+            "coupling_available": bool(couples)}
+
+
 # ---- E. coupled repos --------------------------------------------------------
 
 def coupled(store, timeframe, end=None, metric="clones", limit=None):
@@ -826,6 +964,41 @@ DERIVATIONS = {
         f"  point. Pairs below {COUPLE_MIN_CLONES} window clones are skipped as noise.",
         "",
         "  inputs: durable daily store, raw clone counts, over the window.",
+    ],
+    "attribution": [
+        "ATTRIBUTION — what moved, and what plausibly caused it",
+        "",
+        "  A timeline, not an anomaly table. GitHub returns a repo's whole",
+        "  release history on the first fetch, so this view answers 'what did",
+        "  I ship and what happened' from run one — before there is variance",
+        "  to score, a previous window to difference, or aligned days to",
+        "  correlate. The statistical tiers appear as the store deepens.",
+        "",
+        f"  A release or push explains movement for {ATTRIBUTION_LAG} day(s) after it.",
+        "",
+        "  TIERS, strongest first. The label is the point: an observed cause",
+        "  and an inferred one must never read the same.",
+        "",
+        "    direct       this repo shipped, and this repo moved.",
+        "    coupled      a repo correlated with this one shipped, and this",
+        "                 one moved with no cause of its own. The partner and",
+        "                 its r are named. Needs "
+        f"{COUPLE_MIN_DAYS}+ days of store.",
+        "    account      3+ repos moved together that day and no single",
+        "                 cause is attributable to this one.",
+        "    dip          a material fall. Deliberately unattributed: a",
+        "                 release does not cause a drop, and labelling the",
+        "                 decay after one 'release' reads as though shipping",
+        "                 cost you traffic.",
+        "    unexplained  material movement, no cause in the store.",
+        "    no-effect    you shipped and nothing measurable followed.",
+        "                 Silence is a result, and on a young store this is",
+        "                 most of the view.",
+        "",
+        "  inputs: durable daily store — the events log for causes, daily",
+        "  counts for effects, residualized coupling for the paired tier.",
+        "  Absent event data (a store predating the events section) means no",
+        "  causes, not 'nothing shipped'.",
     ],
     "funnel": [
         "FUNNEL — what people actually opened, and how deep they got",

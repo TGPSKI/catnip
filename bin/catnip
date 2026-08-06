@@ -36,7 +36,8 @@ Reading
   tui             Interactive terminal UI ([enter] drills into a repo, [?] explains
                   any score). Works store-only when no run survives pruning
   view VIEW       Print one view as text (traffic, audience, table, deltas,
-                  anomaly, profile, correlation, funnel, lang, freq)
+                  anomaly, profile, correlation, funnel, lang,
+                  attribution)
   summary         Print the newest run's summary.md
   runs            List run directories
 

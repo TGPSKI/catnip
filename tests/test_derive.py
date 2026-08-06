@@ -560,3 +560,109 @@ class MomentumTests(unittest.TestCase):
         self.assertIn("clones", m)
         self.assertIn("views", m)
         self.assertEqual(len(m["clones"]["diffs"]), len(m["days"]))
+
+
+class AttributionTests(unittest.TestCase):
+    """value <-> cause <-> repo, and the paired form.
+
+    Built as a timeline rather than an anomaly table so that a store one
+    run old still answers "what did I ship and what happened" — the tests
+    that matter most here are the thin-data ones.
+    """
+
+    def _store(self, clones, releases=None, pushes=None, repo="a", n=14):
+        s = store({repo: flat("clones", clones)},
+                  events={repo: {"releases": releases or {},
+                                 "pushes": pushes or {}}})
+        return s
+
+    def test_a_spike_on_a_release_day_is_direct(self):
+        s = self._store([0] * 13 + [90], releases={"v1": "2026-07-14"})
+        row = next(r for r in D.attribution(s, "2w")["rows"] if r["tier"] != "no-effect")
+        self.assertEqual(row["tier"], "direct")
+        self.assertEqual(row["detail"], "v1")
+
+    def test_a_cause_explains_movement_for_the_lag_window(self):
+        s = self._store([0] * 12 + [90, 0], releases={"v1": "2026-07-12"})
+        rows = {r["day"]: r for r in D.attribution(s, "2w")["rows"]}
+        self.assertEqual(rows["2026-07-13"]["tier"], "direct")
+        self.assertEqual(rows["2026-07-13"]["lag"], 1)
+
+    def test_movement_beyond_the_lag_is_not_attributed(self):
+        s = self._store([0] * 13 + [90], releases={"v1": "2026-07-01"})
+        row = next(r for r in D.attribution(s, "2w")["rows"]
+                   if r["day"] == "2026-07-14")
+        self.assertIn(row["tier"], ("unexplained", "account"))
+
+    def test_a_dip_is_never_blamed_on_a_release(self):
+        # Shipping does not cost you traffic; labelling a fall "release"
+        # says the opposite. A real dip needs a HIGH baseline and one low
+        # day — falling from a spike back to a median of zero is a return
+        # to normal, not a departure from it, and is correctly immaterial.
+        s = self._store([10] * 13 + [0], releases={"v1": "2026-07-14"})
+        rows = D.attribution(s, "2w")["rows"]
+        dips = [r for r in rows if r["dir"] == "dip"]
+        self.assertTrue(dips, "fixture produced no material dip")
+        for row in dips:
+            self.assertEqual(row["tier"], "dip")
+            self.assertIsNone(row["cause"])
+
+    def test_returning_to_baseline_after_a_spike_is_not_a_dip(self):
+        # The corollary, and the reason the fixture above looks odd: a
+        # series that sits at zero and spikes once has a median of zero,
+        # so the day after the spike has not departed from anything.
+        s = self._store([0] * 11 + [90, 0, 0])
+        self.assertFalse([r for r in D.attribution(s, "2w")["rows"]
+                          if r["dir"] == "dip"])
+
+    def test_shipping_with_no_movement_is_still_reported(self):
+        # Silence is a result. On a young store this is most of the view.
+        s = self._store([1] * 14, releases={"v1": "2026-07-10"})
+        rows = D.attribution(s, "2w")["rows"]
+        self.assertTrue(any(r["tier"] == "no-effect" for r in rows))
+
+    def test_a_brand_new_store_still_has_something_to_say(self):
+        # One day of traffic: no variance, no previous window, no coupling.
+        # The release history is still there, and so is the view.
+        s = store({"a": {"clones": {"2026-07-01": [5, 5]}}},
+                  events={"a": {"releases": {"v1": "2026-07-01"}, "pushes": {}}})
+        result = D.attribution(s, "1d")
+        self.assertTrue(result["rows"], "attribution went blank on a new store")
+        self.assertFalse(result["coupling_available"])
+
+    def test_coupling_is_absent_rather_than_wrong_on_a_short_store(self):
+        s = self._store([0, 9, 0])
+        self.assertFalse(D.attribution(s, "2w")["coupling_available"])
+
+    def test_a_borrowed_cause_names_its_owner(self):
+        # Rendering a partner's release in this row's cause column reads as
+        # though THIS repo shipped it.
+        rising = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 90]
+        s = store({"a": flat("clones", rising), "b": flat("clones", rising)},
+                  events={"a": {"releases": {"v1": "2026-07-14"}, "pushes": {}}})
+        rows = [r for r in D.attribution(s, "2w")["rows"] if r["tier"] == "coupled"]
+        for row in rows:
+            self.assertTrue(row["detail"].startswith(row["via"][0] + ":"), row)
+            self.assertIn("↗", row["cause"])
+
+    def test_no_row_is_attributed_through_a_negative_correlation(self):
+        # Anti-correlated repos move apart, so a cause in one is evidence
+        # AGAINST a same-direction spike in the other.
+        s = store({"a": flat("clones", list(range(14))),
+                   "b": flat("clones", list(range(14, 0, -1)))},
+                  events={"a": {"releases": {"v1": "2026-07-14"}, "pushes": {}}})
+        for row in D.attribution(s, "2w")["rows"]:
+            if row["via"]:
+                self.assertGreater(row["via"][1], 0)
+
+    def test_a_store_without_an_events_section_reports_no_causes_not_no_movement(self):
+        s = store({"a": flat("clones", [0] * 13 + [90])})
+        rows = D.attribution(s, "2w")["rows"]
+        self.assertTrue(rows)
+        self.assertTrue(all(r["cause"] is None for r in rows))
+
+    def test_every_row_carries_a_known_tier(self):
+        s = self._store([0] * 11 + [90, 4, 0], releases={"v1": "2026-07-12"},
+                        pushes={"2026-07-05": 3})
+        for row in D.attribution(s, "2w")["rows"]:
+            self.assertIn(row["tier"], D.ATTRIBUTION_TIERS)

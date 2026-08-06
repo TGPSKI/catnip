@@ -60,16 +60,20 @@ from catnip.tui.interact import RowCursor
 # with a longer window, so it became the 'epoch' stop on the timeframe
 # cycle instead. Every other view kept its digit: muscle memory is a real
 # cost and renumbering ten views to add one is not worth paying it.
-VIEWS = ('traffic', 'audience', 'table', 'lang', 'freq', 'deltas', 'anomaly',
-         'profile', 'correlation', 'funnel')
+# Slot 5 was 'freq' — weekly commit bars across every repo, which answered
+# "how much did I type" and never "did any of it matter". Its data is not
+# lost: commit-days are what the attribution view uses as causes, and the
+# report skill still reads the weekly CSV.
+VIEWS = ('traffic', 'audience', 'table', 'lang', 'attribution', 'deltas',
+         'anomaly', 'profile', 'correlation', 'funnel')
 VIEW_KEYS = '1234567890'
 
 # Views whose rows are repos, and which therefore carry a cursor and open
 # the drilldown on [enter].
 # 'traffic' is here for its two top lists, which are the only repo names on
 # the landing screen; [tab] chooses which list the cursor is in.
-REPO_ROW_VIEWS = ('traffic', 'audience', 'table', 'deltas', 'anomaly', 'profile',
-                  'funnel')
+REPO_ROW_VIEWS = ('traffic', 'audience', 'table', 'attribution', 'deltas',
+                  'anomaly', 'profile', 'funnel')
 
 TIMEFRAMES = ('1d', '1w', '2w', 'all', 'epoch')
 
@@ -356,6 +360,10 @@ class AnalyticsData:
         return self._derived('coupled', timeframe,
                              lambda: derive.coupled(self.history, timeframe))
 
+    def attribution(self, timeframe):
+        return self._derived('attribution', timeframe,
+                             lambda: derive.attribution(self.history, timeframe))
+
     def funnel_depth(self):
         return self._derived('funnel_depth', '-',
                              lambda: derive.funnel_depth(self.funnel_data))
@@ -562,6 +570,8 @@ class AnalyticsTUI(TuiApp):
         if view == 'traffic':
             top_v, top_c = self._traffic_lists()
             return [name for name, _v in (top_v if self.traffic_pane == 0 else top_c)]
+        if view == 'attribution':
+            return [r['repo'] for r in self._attribution_rows()]
         if view == 'audience':
             return [r['repo'] for r in self._audience_rows()]
         if view == 'table':
@@ -880,7 +890,7 @@ class AnalyticsTUI(TuiApp):
         """j/k/g/G — a cursor on repo-row views, plain scroll elsewhere.
 
         Both paths keep `self.scroll` authoritative for drawing, so the
-        views that have no notion of a selected repo (lang, freq) are
+        views that have no notion of a selected repo (lang) are
         unaffected by the drilldown existing at all.
         """
         curses = self.curses
@@ -1049,8 +1059,8 @@ class AnalyticsTUI(TuiApp):
         d = self.data
         if self.view == 'lang':
             return len(d.lang_dist)
-        if self.view == 'freq':
-            return len(d.code_freq[:500])
+        if self.view == 'attribution':
+            return len(self._attribution_rows())
         if self.view == 'correlation':
             return len(self.data.coupled(self.timeframe)['pairs'])
         if self.view in REPO_ROW_VIEWS:
@@ -1087,8 +1097,8 @@ class AnalyticsTUI(TuiApp):
             self._render_table_view(avail, max_x)
         elif self.view == 'lang':
             self._render_lang_view(avail, max_x)
-        elif self.view == 'freq':
-            self._render_freq_view(avail, max_x)
+        elif self.view == 'attribution':
+            self._render_attribution_view(avail, max_x)
         elif self.view == 'deltas':
             self._render_deltas_view(avail, max_x)
         elif self.view == 'anomaly':
@@ -1573,81 +1583,90 @@ class AnalyticsTUI(TuiApp):
             color = palette[idx % len(palette)] if idx < 6 else self.curses.A_DIM
             self._put(6 + i, 3, f'{lang:<18} {bar:<{bar_w}} {tb:>12,} ({pct:>5.2f}%) {rc:>3}', color)
 
-    def _windowed_code_freq(self):
-        """Commit weeks that overlap the selected window.
+    ATTRIBUTION_TIER_COLOR = {
+        'direct': 1, 'coupled': 2, 'account': 3, 'dip': 0,
+        'unexplained': 4, 'no-effect': 0,
+    }
 
-        This view ignored t/T and always drew all 52 weeks GitHub returns,
-        so "last 7 days" charted nine years. commit_activity is weekly, so
-        a week counts when it overlaps the window at all — a 1d window
-        still shows the week containing that day, and the title says so
-        rather than implying the count is for the day.
+    def _attribution_rows(self):
+        rows = self.data.attribution(self.timeframe)['rows']
+        rows = [r for r in rows if self.in_scope(r['repo'])]
+        if self.search:
+            needle = self.search.lower()
+            rows = [r for r in rows if needle in r['repo'].lower()]
+        return rows
+
+    def _render_attribution_view(self, avail, max_x):
+        """What moved, and what plausibly caused it.
+
+        A timeline rather than an anomaly table, so it says something on a
+        store one run old: GitHub returns a repo's whole release history on
+        the first fetch, and "here is what you shipped and what happened
+        after" needs no variance, no previous window and no aligned days.
+        The statistical tiers appear as the store deepens.
         """
-        rows = self._filtered(self.data.code_freq)
-        days = self.data.window_days(self.timeframe)
-        if not days or DAY_WINDOW.get(self.timeframe) is None:
-            return rows
-        first, last = days[0], days[-1]
-        out = []
-        for row in rows:
-            epoch = _int(row, 'week_epoch')
-            if not epoch:
-                continue
-            try:
-                start = date.fromtimestamp(epoch)
-            except (ValueError, OSError, OverflowError):
-                continue
-            end = start + timedelta(days=6)
-            if start.isoformat() <= last and end.isoformat() >= first:
-                out.append(row)
-        return out
-
-    def _render_freq_view(self, avail, max_x):
         curses = self.curses
+        result = self.data.attribution(self.timeframe)
+        rows = self._attribution_rows()
         win = TF_LABEL.get(self.timeframe, 'window')
-        freq = self._windowed_code_freq()
-        if not freq:
-            self._put(2, 1, 'Code Frequency (Weekly Commits)',
-                      curses.color_pair(6) | self.curses.A_BOLD)
-            msg = self._no_run_note('commit-frequency data')
-            if not self.data.store_only:
-                # The other reason this view is empty, and the more common
-                # one on a first run: GitHub computes these asynchronously
-                # and answers 202 with an empty body until it is done.
-                msg += [
-                    '',
-                    "GitHub's stats endpoints (commit_activity / code_frequency)",
-                    'return HTTP 202 while GitHub computes them in the background.',
-                    'catnip warms them early and collects them later in the same run,',
-                    'so one  catnip run  should populate this. If it stays empty, the',
-                    'repos genuinely have no commits in the tracked window.',
-                ]
-            self._put_lines(4, msg, max_x)
+        self._put(2, 1, f'Attribution \u2014 what moved, and what caused it  ({win})',
+                  curses.color_pair(6) | self.curses.A_BOLD)
+        self._put(3, 1, f'A release or push explains movement for '
+                  f'{derive.ATTRIBUTION_LAG} day(s) after it. [?] explains each tier.',
+                  self.curses.A_DIM)
+        x = 1
+        for tier in ('direct', 'coupled', 'account', 'unexplained', 'no-effect'):
+            pair = self.ATTRIBUTION_TIER_COLOR[tier]
+            self._put(4, x, BLOCK,
+                      curses.color_pair(pair) if pair else self.curses.A_DIM)
+            self._put(4, x + 2, tier, self.curses.A_DIM)
+            x += len(tier) + 5
+        if not result['coupling_available']:
+            self._put(4, x, f'(coupled tier needs {derive.COUPLE_MIN_DAYS} days '
+                      f'of store)', self.curses.A_DIM)
+
+        if not rows:
+            self._put_lines(6, [
+                'Nothing has moved and nothing shipped in this window.',
+                '',
+                'Widen the window with t/T, or run  catnip run  to collect more.',
+                'This view fills in as soon as there is a release, a push, or a',
+                'day whose traffic departs from that repo\'s own normal.',
+            ], max_x)
             return
 
-        # Aggregate commits per ISO week across all repos -> time-series chart.
-        by_week = defaultdict(int)
-        for r in freq:
-            by_week[r.get('week_label', '')] += _int(r, 'commits')
-        # '2026-W31' truncated to its last five characters read '6-W31'.
-        # Two-digit year plus week is the same width and says which year.
-        series = [{'label': (wl[2:4] + wl[5:]) if len(wl) >= 8 else wl, 'count': c}
-                  for wl, c in sorted(by_week.items()) if wl]
-        total = sum(b['count'] for b in series)
-        plot_h = max(3, min(10, avail - 8))
-        y = self._bar_chart(
-            2, series, max_x, plot_h, curses.color_pair(1), bin_unit='w',
-            title=f'Code Frequency — weekly commits, {win} '
-                  f'({total:,} commits in {len(series)} week(s) overlapping the window)')
-        # Top repos by commits underneath.
-        by_repo = defaultdict(int)
-        for r in freq:
-            by_repo[r.get('repo_name', '')] += _int(r, 'commits')
-        top = sorted(by_repo.items(), key=lambda kv: -kv[1])[:8]
-        if top and y + 1 < avail:
-            self._put(y + 1, 1, 'Most commits (tracked weeks):',
-                      curses.color_pair(2) | self.curses.A_BOLD)
-            for i, (name, c) in enumerate(top):
-                self._put(y + 2 + i, 3, f'{i+1:>2}. {name[:25]:<25} {c:>6,} commits', 0)
+        name_w = min(22, max(12, max_x // 6))
+        self._put(6, 3, f'  {"when":<6} {"repo":<{name_w}} {"cause":<8} '
+                  f'{"detail":<24} {"effect":<22} {"tier":<11} via',
+                  curses.color_pair(2) | self.curses.A_BOLD)
+        page = avail - 6
+        cur = self.cursor('attribution').clamp(len(rows), page)
+        self.scroll = cur.scroll
+        for i, row in enumerate(rows[cur.scroll:cur.scroll + page]):
+            idx = cur.scroll + i
+            selected = idx == cur.index
+            pair = self.ATTRIBUTION_TIER_COLOR[row['tier']]
+            color = curses.color_pair(pair) if pair else self.curses.A_DIM
+            if row['tier'] == 'no-effect':
+                effect = 'no measurable change'
+            elif row['median'] is None:
+                effect = f'{row["metric"]} {row["value"]}'
+            else:
+                effect = (f'{row["metric"]} {row["median"]:.0f} \u2192 {row["value"]}'
+                          f'  z{row["z"]:+.0f}')
+            via = ''
+            if row['via']:
+                via = f'{row["via"][0][:18]} r={row["via"][1]:+.2f}'
+            lag = f' +{row["lag"]}d' if row.get('lag') else ''
+            self._put(8 + i, 3, f'{">" if selected else " "} {_short_date(row["day"]):<6} '
+                      f'{row["repo"][:name_w]:<{name_w}}',
+                      curses.color_pair(5) if selected else color)
+            self._put(8 + i, 3 + 2 + 7 + name_w,
+                      f'{(row["cause"] or "-"):<8} {(row["detail"] or "")[:24]:<24} '
+                      f'{effect:<22} {row["tier"] + lag:<11} {via}', color)
+            self._mark_selected(8 + i, max_x, selected)
+        self._scrollbar(8, page, len(rows), cur.scroll, max_x)
+        self.scroll_indicator(2, max_x, len(rows), page)
 
     def _windowed_pr_counts(self):
         """{repo: {'opened': n, 'merged': n}} for PRs whose created_at / merged_at
@@ -3240,12 +3259,14 @@ def render_text_view(data, view, timeframe='2w'):
         for r in data.lang_dist:
             print(f"  {r.get('language', ''):<20} {_int(r, 'total_bytes'):>12,} "
                   f"({r.get('total_bytes_pct', '')}%) repos={r.get('repo_count', '')}")
-    elif view == 'freq':
-        by_week = defaultdict(int)
-        for r in data.code_freq:
-            by_week[r.get('week_label', '')] += _int(r, 'commits')
-        for wl, c in sorted(by_week.items()):
-            print(f'  {wl}  {c:>6,}')
+    elif view == 'attribution':
+        result = data.attribution(timeframe)
+        for r in result['rows']:
+            via = f"  via {r['via'][0]} r={r['via'][1]:+.2f}" if r['via'] else ''
+            effect = ('no measurable change' if r['tier'] == 'no-effect'
+                      else f"{r['metric']} {r['value']}")
+            print(f"  {r['day']}  {r['repo']:<28} {r['tier']:<11} "
+                  f"{(r['cause'] or '-'):<8} {(r['detail'] or ''):<26} {effect}{via}")
     elif view == 'deltas':
         rows = data.deltas(timeframe)
         n = len(data.window_days(timeframe)) or 1
@@ -3396,7 +3417,7 @@ def main(argv=None):
         return 1
     if run_dir is None and not args.store_only:
         print(f'catnip: no runs on disk — reading the durable store only '
-              f'({history_file}). Per-run views (lang, freq, funnel) will be empty.',
+              f'({history_file}). Per-run views (lang, funnel) will be empty.',
               file=sys.stderr)
 
     data = AnalyticsData(run_dir, stats_file, history_file)

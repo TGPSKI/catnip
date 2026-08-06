@@ -28,6 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opens an event detail screen: which repos moved that day, each one's
   |Z|, value and median, and whatever release or push it followed. Each
   row carries a colour block in the severity of its worst repo.
+- **Attribution view (`5`), replacing code frequency.** value <-> cause
+  <-> repo: what moved, and the release or push that plausibly caused it,
+  with the paired form (a cause in one repo explaining movement in a
+  repo coupled to it). Built as a timeline rather than an anomaly table
+  on purpose — GitHub returns a repo's whole release history on the
+  first fetch, so it answers "what did I ship and what happened" from run
+  one, before there is variance to score, a previous window to difference
+  or aligned days to correlate. The statistical tiers appear as the store
+  deepens; the view is never blank because it never depended on them.
+  Every row is labelled with its tier, because an observed cause and an
+  inferred one are different claims:
+  `direct` (this repo shipped and moved), `coupled` (a correlated repo
+  shipped; the partner and its r are named), `account` (a wave, no single
+  cause), `dip` (deliberately unattributed), `unexplained`, `no-effect`
+  (you shipped and nothing followed — silence is a result).
 - **`[space]` on a deltas row opens a momentum view.** Level, the
   day-over-day first derivative drawn around a zero line, a least-squares
   slope, and this window's rate against the previous one. A deltas cell
@@ -194,6 +209,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Table (`3`) gained derived columns** — momentum, audience, depth,
   stars-per-unique-visitor — all sortable, and it lists repos the newest
   run no longer has but the store still remembers.
+- **The code-frequency view was deleted**, its slot taken by attribution.
+  It charted weekly commits across every repo, which answered "how much
+  did I type" and never "did any of it matter". Its data is not lost:
+  daily commit counts are what attribution uses as causes.
 - **The top-repos view was deleted.** Ranking by age and stars answered
   nothing the table did not answer better; its useful remnants are the
   table's new columns. The audience view took slot `2`; every other view

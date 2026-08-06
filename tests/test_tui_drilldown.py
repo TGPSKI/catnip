@@ -221,7 +221,7 @@ class StoreOnlyTests(unittest.TestCase):
     def test_per_run_views_explain_why_they_are_empty(self):
         # "Run catnip analyze first" sends the operator to a command that
         # answers "no runs found".
-        for view in ("funnel", "lang", "freq"):
+        for view in ("funnel", "lang"):
             app = build_tui(self.data(), 40, 140, view)
             app.render(40, 140)
             text = " ".join(t for _y, _x, t in app.writes)
@@ -495,46 +495,6 @@ class FunnelPaneTests(unittest.TestCase):
             drawn = [y for y, _x, t in app.writes if str(t).strip()]
             self.assertLess(max(drawn), rows,
                             f"funnel drew past the frame at height {rows}")
-
-
-class FreqWindowTests(unittest.TestCase):
-    """`t/T` is global; this view used to chart nine years under "last 7d"."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._tmp = tempfile.TemporaryDirectory()
-        root = Path(cls._tmp.name)
-        run = make_run(root)
-        with redirect_stdout(io.StringIO()):
-            analyze_github(run, strict=True)
-            history.ingest(root / "runs", root / "stats" / "history", "testuser")
-        cls.data = AnalyticsData(run)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls._tmp.cleanup()
-
-    def test_a_narrow_window_shows_fewer_weeks_than_all(self):
-        app = build_tui(self.data, 40, 150, "freq")
-        app.timeframe = "all"
-        every = len(app._windowed_code_freq())
-        app.timeframe = "1d"
-        narrow = len(app._windowed_code_freq())
-        self.assertLessEqual(narrow, every)
-
-    def test_a_week_overlapping_the_window_counts(self):
-        # commit_activity is weekly, so a one-day window still shows the
-        # week containing that day rather than nothing at all.
-        app = build_tui(self.data, 40, 150, "freq")
-        app.timeframe = "2w"
-        self.assertTrue(app._windowed_code_freq())
-
-    def test_the_title_names_the_window(self):
-        app = build_tui(self.data, 40, 150, "freq")
-        app.timeframe = "1w"
-        app.render(40, 150)
-        text = " ".join(t for _y, _x, t in app.writes)
-        self.assertIn("last 7d", text)
 
 
 class SortContractTests(unittest.TestCase):
