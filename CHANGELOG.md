@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Demo GIF (`docs/media/demo.gif`), embedded at the top of the README.
+- `tests/test_tui_layout.py`: renders every view at six terminal sizes
+  through a recording `put` and asserts nothing lands on the header or
+  footer row.
+
+### Fixed
+
+- History view drew its stars-per-month x-axis labels onto the footer
+  (`[q]uit 24-05load`), and at short heights the daily-clones chart
+  overflowed too. Charts are now sized against the space that actually
+  remains — reserving the axis-label row `bar_chart` needs — and are
+  dropped rather than floored to a height that does not fit.
+
 ## [0.1.0] - 2026-08-05
 
 ### Added

@@ -24,6 +24,11 @@ catnip.conf
 /stats/
 *.log
 
+# --- Raw demo recordings ---
+# The published GIF is committed under docs/media/; the cast and working
+# takes it was rendered from are regenerable with the record toolkit.
+recordings/
+
 # --- Editor ---
 .vscode/
 .idea/

@@ -1096,37 +1096,60 @@ class AnalyticsTUI(TuiApp):
         if not clones and not views:
             self._put(4, 3, 'No history store yet. Run  make history  first.', self.curses.A_DIM)
             return
-        plot_h = max(3, min(7, (avail - 12) // 2))
         # Full store, not a trailing slice — the chart bins adjacent days when
         # the window outgrows the terminal, so "since store epoch" is honest.
-        y = self._bar_chart(4, views, max_x, plot_h, curses.color_pair(2), bin_unit='d',
-                            title=f'Daily Views since store epoch ({sum(b["count"] for b in views):,} total)')
-        y += 1
-        y = self._bar_chart(y, clones, max_x, plot_h, curses.color_pair(1), bin_unit='d',
-                            title=f'Daily Clones since store epoch ({sum(b["count"] for b in clones):,} total)')
-        # Stars-over-time from event timestamps (phase 4 data). Full-width bar
-        # chart with a month-over-month Δ row beneath (plan 13) — replaces the
-        # short/narrow sparkline.
+        #
+        # Sizing rule for every chart below. A chart of height h drawn at row
+        # `top` occupies top .. top+h+2 — its title, h rows of bars, and then
+        # its own x-axis label row — and _bar_chart returns top+h+3. The
+        # previous version sized against the remaining space without
+        # reserving that label row, and floored the height at 3 when even
+        # that much did not fit, so on a short terminal the month labels
+        # landed on the footer and rendered `[q]uit 24-05load`. Charts now
+        # shrink to fit and are dropped entirely rather than overflowing.
+        last = avail + 1  # the last row a view may draw on; the footer owns last+1
+
+        specs = [
+            (views, curses.color_pair(2), 'd',
+             f'Daily Views since store epoch ({sum(b["count"] for b in views):,} total)'),
+            (clones, curses.color_pair(1), 'd',
+             f'Daily Clones since store epoch ({sum(b["count"] for b in clones):,} total)'),
+        ]
+
+        # Stars-over-time from event timestamps: a full-width bar chart with a
+        # month-over-month Δ row beneath it.
+        star_series = []
         sbm = self.data.history.get('stars_by_month') or {}
-        if sbm and y + 4 < 2 + avail:
+        if sbm:
             months = defaultdict(int)
             for mm in sbm.values():
                 for month, cnt in mm.items():
                     months[month] += cnt
-            series = [{'label': m[2:], 'count': c} for m, c in sorted(months.items())]
-            if series:
-                sph = max(3, min(6, (2 + avail) - (y + 3)))
-                total = sum(b['count'] for b in series)
-                y2 = self._bar_chart(
-                    y + 1, series, max_x, sph, curses.color_pair(3), bin_unit='mo',
-                    title=f'Stars/month ({total:,} total, since {series[0]["label"]})')
-                if y2 < 2 + avail:
-                    counts = [b['count'] for b in series]
-                    deltas = [0] + [counts[i] - counts[i - 1] for i in range(1, len(counts))]
-                    spark = _sparkline(deltas)
-                    net = counts[-1] - counts[0] if len(counts) > 1 else 0
-                    self._put(y2, 1, f'Δ vs prev month: {spark}   net {net:+d}',
-                              self.curses.A_DIM)
+            star_series = [{'label': m[2:], 'count': c} for m, c in sorted(months.items())]
+            if star_series:
+                total = sum(b['count'] for b in star_series)
+                specs.append((star_series, curses.color_pair(3), 'mo',
+                              f'Stars/month ({total:,} total, since {star_series[0]["label"]})'))
+
+        # The two daily charts share a height — letting the first one take
+        # every spare row and squashing the second reads as a rendering bug.
+        base = min(7, (last - 9) // 2)
+        y, drew_stars = 4, False
+        for series, color, unit, title in specs:
+            room = last - y - 2  # rows left for bars once title and labels are reserved
+            height = min(base, room) if base >= 2 else room
+            if height < 2:
+                break
+            y = self._bar_chart(y, series, max_x, min(height, 7), color,
+                                bin_unit=unit, title=title) + 1
+            drew_stars = series is star_series
+
+        if drew_stars and y <= last and len(star_series) > 1:
+            counts = [b['count'] for b in star_series]
+            deltas = [0] + [counts[i] - counts[i - 1] for i in range(1, len(counts))]
+            net = counts[-1] - counts[0]
+            self._put(y, 1, f'Δ vs prev month: {_sparkline(deltas)}   net {net:+d}',
+                      self.curses.A_DIM)
 
     def _render_footer(self, max_y, max_x):
         curses = self.curses

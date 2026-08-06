@@ -8,11 +8,12 @@ with timestamps, releases, pull requests, languages, commit activity —
 for every repository you own or administer. Stdlib Python and `gh`, no
 install step, no service to sign up for, no data leaving your machine.
 
-```
-catnip  [octocat]  [2w]
-Repos: 24  Stars: 318  Forks: 41
-Active: 19  14d clones: 1,204  14d views: 8,930  All-time: 41,882c/362,051v
-```
+<img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over 35 repositories: the traffic view charts daily views and clones as bar graphs, pressing t widens the timeframe from the last 14 days to all stored history, the top-repos view cycles its ranking criterion to forks, the repo table scrolls and then filters live to four repositories by typing /react, the anomaly view lists MAD-scored traffic spikes and filters down to the extreme ones, the content funnel breaks views down by page category, the history store view shows daily series since its epoch plus stars per month, and the demo ends back on the traffic view"/>
+
+*`catnip tui` over one real account's public repositories — traffic
+charts, the `t` timeframe widening to the full history store, live repo
+filtering, MAD anomaly detection, and the content funnel. Everything here
+is on disk after one `catnip run`.*
 
 ## Why it exists
 
