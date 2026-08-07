@@ -666,3 +666,34 @@ class AttributionTests(unittest.TestCase):
                         pushes={"2026-07-05": 3})
         for row in D.attribution(s, "2w")["rows"]:
             self.assertIn(row["tier"], D.ATTRIBUTION_TIERS)
+
+
+class ReturnShapeTests(unittest.TestCase):
+    """A function's early return must carry the same keys as its late one.
+
+    `attribution` returned three keys when the window was empty and four
+    when it was not. The view read the fourth unconditionally, so the day
+    the fixture's dates fell out of a rolling window the TUI raised
+    KeyError mid-render — inside curses, which takes the terminal with it.
+    CI caught it and the local run did not, purely because CI is UTC and
+    the developer machine was seven hours behind: a bug that arrives at
+    midnight is still a bug.
+    """
+
+    def _store(self, days):
+        return {"schema_version": 3, "owner": "t",
+                "repos": {"a": {"clones": dict(days), "views": {}}}}
+
+    def test_attribution_keys_do_not_depend_on_having_data(self):
+        full = D.attribution(self._store({"2026-08-06": [9, 4]}), "2w",
+                             end="2026-08-06")
+        empty = D.attribution(self._store({}), "2w", end="2026-08-06")
+        self.assertEqual(sorted(full), sorted(empty))
+
+    def test_an_empty_window_reports_coupling_unavailable(self):
+        # Not merely present — false. "No coupling was computed" and
+        # "coupling was computed and found nothing" are the same value
+        # here only because both mean the view must not claim a partner.
+        empty = D.attribution(self._store({}), "2w", end="2026-08-06")
+        self.assertFalse(empty["coupling_available"])
+        self.assertEqual(empty["rows"], [])

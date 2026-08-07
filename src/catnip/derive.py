@@ -621,7 +621,14 @@ def attribution(store, timeframe, end=None, funnel_rows=None):
     """
     days = window(store, timeframe, end)
     if not days:
-        return {"days": days, "rows": [], "unexplained": []}
+        # Same keys as the full return below. A caller must never have to
+        # know which branch produced its dict: this one omitted
+        # `coupling_available`, so an empty window raised KeyError halfway
+        # through drawing the attribution view — inside curses, where a
+        # traceback takes the terminal with it. `catnip report` reads the
+        # same key and would have died the same way.
+        return {"days": days, "rows": [], "unexplained": [],
+                "coupling_available": False}
 
     grid = anomalies(store, timeframe, end)
     cells = dict(grid["rows"])
