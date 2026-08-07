@@ -263,13 +263,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timeframe cross-product that `test_tui_layout` already asserts offline
   against a character grid, ~400x faster. The pty suite now covers only
   what a terminal can uniquely prove: that curses does not raise.
-- **`tests/test_docs.py` pins the claims a machine can check.** The CSV
-  count against a real analysis run, `doctor.TUI_CSVS` against the number
-  spelled in `docs/metrics.md`, every view key against `VIEWS`, every
-  shipped skill against the README, and every advertised command against
-  the dispatcher. Documentation drifts precisely because nothing fails
-  when it does: `docs/metrics.md` described sixteen CSVs and a schema-1
-  store, and the README claimed two agent skills while three shipped.
 - **`docs/metrics.md` rewritten for the store-first architecture.** It
   documented the run-scoped CSV scores and stopped there, which was the
   whole of the derived layer when it was written and is now the smaller
