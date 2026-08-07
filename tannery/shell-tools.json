@@ -119,69 +119,67 @@
       "output_cap_bytes": 20000
     },
     {
-      "name": "catnip_prowl_finding",
-      "description": "Append ONE finding to this cycle's prowl file. `tier` is constrained to measured|inferred|speculative and `evidence` must name the tool call that supports it - a finding cannot be recorded without both.",
-      "command": "bash",
+      "name": "catnip_prowl_dispatch",
+      "description": "Dispatch EVERY SEED block in a meta-analysis as one investigation brief on the analyst queue. Takes the seeds verbatim; parsing is deterministic and happens here, so the number of briefs dispatched never depends on a model counting them. Rejects a seed missing its angle or brief, and a meta-analysis with no SEED blocks.",
+      "command": "python3",
       "args": [
-        "-c",
-        "mkdir -p .state/prowl && printf '### %s  `%s`\\n\\n%s\\n\\n**Evidence:** %s\\n\\n' \"$2\" \"$1\" \"$4\" \"$3\" >> \".state/prowl/$5.md\" && echo \"recorded $1 finding\"",
-        "--",
-        "{{tier}}",
-        "{{claim}}",
-        "{{evidence}}",
-        "{{body}}",
-        "{{cycle}}"
+        "scripts/prowl-dispatch.py",
+        "{{cycle}}",
+        "{{window}}",
+        "{{seeds}}"
       ],
       "required": [
-        "tier",
-        "claim",
-        "evidence",
-        "body",
-        "cycle"
-      ],
-      "patterns": {
-        "tier": "^(measured|inferred|speculative)$",
-        "evidence": "^catnip-(report-read|view|derivation|store-series|store-status)\\b.{0,300}$",
-        "cycle": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
-      },
-      "output_cap_bytes": 400
-    },
-    {
-      "name": "catnip_prowl_refuted",
-      "description": "Record a hypothesis that did NOT hold. A prowl cycle with no refutations is a cycle that did not actually test anything.",
-      "command": "bash",
-      "args": [
-        "-c",
-        "mkdir -p .state/prowl && printf -- '- %s - checked with %s; did not hold: %s\\n' \"$1\" \"$2\" \"$3\" >> \".state/prowl/$4.refuted.md\" && echo recorded",
-        "--",
-        "{{hypothesis}}",
-        "{{checked_with}}",
-        "{{why_not}}",
-        "{{cycle}}"
-      ],
-      "required": [
-        "hypothesis",
-        "checked_with",
-        "why_not",
-        "cycle"
+        "cycle",
+        "window",
+        "seeds"
       ],
       "patterns": {
         "cycle": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
       },
-      "output_cap_bytes": 400
+      "timeout_seconds": 60,
+      "output_cap_bytes": 4000
     },
     {
-      "name": "catnip_prowl_publish",
-      "description": "Assemble this cycle's recorded findings into prowl.md beside the deterministic report.md, and print the result path plus a per-tier count. Fails if no findings were recorded.",
+      "name": "catnip_store_sweep",
+      "description": "Print every repo with traffic on the given day(s), from the durable store - including repos the windowed views withheld as too quiet to classify. One or more YYYY-MM-DD dates, space-separated. This is the tool for account-wide crawl patterns that no per-repo view can see.",
+      "command": "python3",
+      "args": [
+        "scripts/store-sweep.py",
+        "{{dates}}"
+      ],
+      "required": [
+        "dates"
+      ],
+      "patterns": {
+        "dates": "^[0-9]{4}-[0-9]{2}-[0-9]{2}( [0-9]{4}-[0-9]{2}-[0-9]{2}){0,6}$"
+      },
+      "timeout_seconds": 60,
+      "output_cap_bytes": 20000
+    },
+    {
+      "name": "catnip_prowl_previous",
+      "description": "Print the currently-published prowl.md - the previous cycle's claims, to test against the store as it stands now. Prints 'none' when no prowl has been published yet.",
       "command": "bash",
       "args": [
         "-c",
-        "./scripts/prowl-publish.sh \"$1\"",
-        "--",
-        "{{cycle}}"
+        "d=$(catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['data_dir'])\"); latest=$(ls -1d \"$d\"/reports/*/ 2>/dev/null | sort | tail -1); cat \"${latest}prowl.md\" 2>/dev/null || echo none"
+      ],
+      "required": [],
+      "timeout_seconds": 30,
+      "output_cap_bytes": 20000
+    },
+    {
+      "name": "catnip_prowl_record",
+      "description": "File EVERY block in one prowl analysis - findings, corrections, refutations, watch items - then publish the cycle's prowl.md beside report.md. Takes the analysis verbatim; parsing the blocks is deterministic and happens here, so the number of blocks recorded never depends on a model counting them. Rejects a tier outside measured|inferred|speculative, evidence that does not open with the catnip tool it rests on, an inferred finding with no test, a speculative one with nothing that would confirm it, and an analysis with no FINDING blocks.",
+      "command": "python3",
+      "args": [
+        "scripts/prowl-record.py",
+        "{{cycle}}",
+        "{{analysis}}"
       ],
       "required": [
-        "cycle"
+        "cycle",
+        "analysis"
       ],
       "patterns": {
         "cycle": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
@@ -195,7 +193,7 @@
       "command": "bash",
       "args": [
         "-c",
-        "printf '%s' \"$2\" > \"$1\"",
+        "mkdir -p \"$(dirname \"$1\")\" && printf '%s' \"$2\" > \"$1\" && echo 'state saved'",
         "--",
         "{{path}}",
         "{{content}}"
@@ -211,9 +209,12 @@
     },
     {
       "name": "read_state",
-      "description": "Read a value from a .state/ file. Returns \"none\" with exit code 1 if the file does not exist.",
-      "command": "cat",
+      "description": "Read a value from a .state/ file. Prints 'none' and succeeds when the file does not exist, which is the normal first cycle.",
+      "command": "bash",
       "args": [
+        "-c",
+        "cat -- \"$1\" 2>/dev/null || echo none",
+        "--",
         "{{path}}"
       ],
       "required": [

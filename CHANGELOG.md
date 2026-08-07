@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Self-graded analysis depth.** A meta-analyst reads the deterministic
+  report every third day, judges how much investigation the cycle deserves,
+  and seeds N analyst briefs — one per distinct phenomenon, N being its
+  call. Each brief runs as its own analyst; packages fan back in through the
+  writer, whose per-cycle files accumulate and whose publish dedupes, so
+  collation needs no join queue and a failed angle costs only itself. The
+  dispatch and recording ends are both single deterministic calls that parse
+  blocks themselves — no model ever counts its own fan-out.
+
+### Changed
+
+- **The served chain is event-driven; only the fetch and the analysis are on
+  cron.** 0.2.1 scheduled the report at 06:52 and sized the gap so a
+  41-minute collect would probably have finished — clock arithmetic standing
+  in for a dependency. The report now runs from a curing fed by collect's
+  output, and the prowl writer from a curing fed by the analysis, so a slow
+  fetch delays the report instead of losing it. Routing is one fact per
+  stage: the producer's intake URL and the consuming curing name the same
+  queue. The `leather ingest` targets remain for one-shot testing and agent
+  validation; the served chain never uses them.
+
+- **The prowl analysis is recorded by one deterministic call.** The 0.2.1
+  writer made one tool call per FINDING/REFUTED block, which put a
+  data-dependent number of calls on the model: three calls against four
+  findings drops one silently — no error, just a shorter report.
+  `catnip-prowl-record` replaces `catnip_prowl_finding`, `catnip_prowl_refuted`
+  and `catnip_prowl_publish`: it takes the whole analysis, parses the blocks
+  itself, files them all or fails naming the block it refused, and publishes.
+  Validation is unchanged — tier enum, evidence opening with the catnip tool
+  the claim rests on, publish refusing an empty cycle.
+- **Every measured value in a state file is now carried by an extract rule.**
+  Coverage, repo count, schema version, the report's meta fields and the
+  recorder's counts reach their recording turns as `{{...}}` verbatim instead
+  of as a model's transcription — 0.2.1 wrote a Python repr of the coverage
+  ranges where the store's own JSON belonged. The model writes only judgment:
+  `action`, `reason`, a finding's prose.
+- **`catnip-report`'s verdict rules moved into the turn that owns the
+  writer.** The agent frontmatter is the system prompt and is resent every
+  turn, so rules about `catnip-report-write` fired on turns that could not
+  reach the tool. Output rules now live with the tools that produce them.
+- **`tannery/README.md` rewritten** for someone deciding whether to run this,
+  in the shape of leather's example READMEs.
+
+### Fixed
+
+- **The prowl writer dead-lettered every scheduled cycle.** The 0.2.1
+  lifecycle routed the analysis with `output: type: queue`, which builds a
+  queue item with no hide behind it; the curing loads the item's hide
+  unconditionally and failed each attempt. The route is now `type: http` to
+  leather's `/intake`, which stores the hide first and enqueues against it.
+  This tannery had never successfully recorded a prowl analysis until now.
+
 ## [0.2.1] - 2026-08-07
 
 ### Added
@@ -62,12 +118,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The tannery's own timeouts were sized by guess.** A real run took 2459
-  seconds; the innermost bound was 2100, so shell-mcp would have SIGKILLed
-  the pipeline at 35 minutes and the agent would have reported a timeout on
-  its first real cycle. Now 5400s/6000s/6600s, innermost-first, sized at
-  roughly twice the measurement. The prompt also claimed "10-20 minutes",
-  which would have led the agent to call a normal run anomalous.
+- **Tannery timeouts are sized from a measurement instead of the first
+  draft's guess.** The draft of this release bounded `catnip_run` at 2100
+  seconds without measuring anything; a real run took 2459. Shipped as
+  drafted, shell-mcp would have SIGKILLed the pipeline 35 minutes into its
+  first scheduled cycle and the agent would have reported a timeout. Now
+  5400s/6000s/6600s, innermost-first, roughly twice the measurement. The
+  same draft told the agent to expect "10–20 minutes", which would have made
+  a normal 41-minute run read as anomalous; the prompt now states the
+  measured duration.
 - **`catnip view why <view>` had never worked.** It took the view name from
   `--timeframe`, which argparse restricts to `1d/1w/2w/all/epoch`, so the
   name was rejected and a bare `view why` asked derive for the derivation of

@@ -1,0 +1,7 @@
+name: report
+description: Write the deterministic report when collect delivers.
+agent: catnip-report
+queue: report-in
+page_size_bytes: 8000
+max_attempts: 2
+timeout_seconds: 600

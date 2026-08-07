@@ -21,14 +21,18 @@ success otherwise.
 An unchanged latest_day is not a failure. If it has not moved for three
 cycles, say so in reason.
 
+Three turns: run the pipeline, verify what landed, record. Each turn holds
+only its own tools - write_state only becomes available in the last.
+
 ---
-toolsets: [catnip-pipeline]
-Call catnip-run.
+Call catnip-run once. When it returns, close the turn with one line: whether
+the call itself errored.
 
 ---
 toolsets: [catnip-inspect, catnip-status]
-Call catnip-verify, then catnip-store-status, then read_state with
-path=.state/catnip-collect.json. It returns "none" on the first cycle.
+Call catnip-verify, then catnip-store-status, then call read_state with
+path=.state/catnip-collect.json. It prints "none" on the first cycle. Close
+the turn with one line: what the store shows and whether verify passed.
 
 ---
 toolsets: [catnip-record]
@@ -36,9 +40,9 @@ Write this to .state/catnip-collect.json with write_state, on failure as well
 as success:
 
 latest_day:     {{latest_day}}
-coverage:       <the store's coverage ranges>
-repos:          <the store's repo count>
-schema_version: <the store's schema version>
+coverage:       {{coverage}}
+repos:          {{repos}}
+schema_version: {{schema_version}}
 verified:       yes | no
 action:         success | failed
 reason:         <one sentence naming the evidence used>

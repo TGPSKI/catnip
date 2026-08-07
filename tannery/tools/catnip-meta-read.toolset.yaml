@@ -1,0 +1,7 @@
+name: catnip-meta-read
+tools:
+  - catnip-store-status
+  - catnip-report-read
+  - catnip-prowl-previous
+  - catnip-view
+  - catnip-store-sweep

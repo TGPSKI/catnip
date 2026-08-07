@@ -3,6 +3,14 @@ artifact_dir: .state/artifacts
 curing_dir: curings
 
 queues:
+  report-in:
+    concurrency: 1
+    max_attempts: 2
+    max_depth: 50
+  prowl-analyze-in:
+    concurrency: 2
+    max_attempts: 2
+    max_depth: 50
   prowl-write-in:
     concurrency: 1
     max_attempts: 2

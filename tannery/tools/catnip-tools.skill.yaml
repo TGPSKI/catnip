@@ -1,8 +1,53 @@
 name: catnip-tools
+# {{key}} means a tool measured it; <> in a prompt means the model writes it.
+# Values reach subsequent turns only.
 extract:
   - tool: catnip-store-status
     pattern: '"latest_day":\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"'
     store: latest_day
+  - tool: catnip-store-status
+    pattern: '"coverage":\s*(\[.*?\]\])'
+    store: coverage
+  - tool: catnip-store-status
+    pattern: '"repos":\s*([0-9]+)'
+    store: repos
+  - tool: catnip-store-status
+    pattern: '"schema_version":\s*([0-9]+)'
+    store: schema_version
+  - tool: catnip-report-read
+    pattern: '([0-9]{4}-[0-9]{2}-[0-9]{2} to [0-9]{4}-[0-9]{2}-[0-9]{2})'
+    store: window
+  - tool: catnip-report-meta
+    pattern: '"latest_day":\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"'
+    store: report_latest_day
+  - tool: catnip-report-meta
+    pattern: '"written":\s*"([0-9A-Za-z]+)"'
+    store: report_written
+  - tool: catnip-report-meta
+    pattern: '"provenance":\s*"([a-z]+)"'
+    store: provenance
+  - tool: catnip-prowl-dispatch
+    pattern: '^dispatched ([0-9]+) brief'
+    store: seeds_dispatched
+  # catnip-prowl-record prints text, not JSON, so these are line-anchored.
+  - tool: catnip-prowl-record
+    pattern: '^cycle ([0-9]{4}-[0-9]{2}-[0-9]{2})$'
+    store: prowl_cycle
+  - tool: catnip-prowl-record
+    pattern: '^wrote (\S+)$'
+    store: prowl_published
+  - tool: catnip-prowl-record
+    pattern: '^  measured +([0-9]+)$'
+    store: prowl_measured
+  - tool: catnip-prowl-record
+    pattern: '^  inferred +([0-9]+)$'
+    store: prowl_inferred
+  - tool: catnip-prowl-record
+    pattern: '^  speculative +([0-9]+)$'
+    store: prowl_speculative
+  - tool: catnip-prowl-record
+    pattern: '^  refuted +([0-9]+)$'
+    store: prowl_refuted
 tools:
   - name: catnip-report-read
     description: "Print the deterministic report without writing it"
@@ -28,18 +73,30 @@ tools:
     mcp:
       server: shells
       tool: catnip_store_series
-  - name: catnip-prowl-finding
-    description: "File one finding (requires tier, claim, body, evidence, cycle)"
+  - name: catnip-prowl-dispatch
+    description: "Dispatch every SEED block as one analyst brief (requires cycle, window, seeds)"
     type: mcp
     mcp:
       server: shells
-      tool: catnip_prowl_finding
-  - name: catnip-prowl-refuted
-    description: "File a hypothesis that did not hold (requires hypothesis, checked_with, why_not, cycle)"
+      tool: catnip_prowl_dispatch
+  - name: catnip-store-sweep
+    description: "Print every repo with traffic on the given day(s) from the store (requires dates, space-separated)"
     type: mcp
     mcp:
       server: shells
-      tool: catnip_prowl_refuted
+      tool: catnip_store_sweep
+  - name: catnip-prowl-previous
+    description: "Print the previous cycle's published prowl.md, or 'none'"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_prowl_previous
+  - name: catnip-prowl-record
+    description: "File every finding and refutation in one analysis, then publish the cycle's prowl.md (requires cycle, analysis)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_prowl_record
   - name: catnip-verify
     description: "Assert the analysis CSVs the TUI requires exist and are non-empty"
     type: mcp
@@ -58,12 +115,6 @@ tools:
     mcp:
       server: shells
       tool: catnip_run
-  - name: catnip-prowl-publish
-    description: "Assemble the cycle into prowl.md beside report.md (requires cycle)"
-    type: mcp
-    mcp:
-      server: shells
-      tool: catnip_prowl_publish
   - name: write_state
     description: "Write a value to a .state/ file (requires path, content)"
     type: mcp

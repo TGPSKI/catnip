@@ -4,3 +4,5 @@ tools:
   - catnip-view
   - catnip-derivation
   - catnip-store-series
+  - catnip-store-sweep
+  - catnip-prowl-previous

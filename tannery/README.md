@@ -1,76 +1,98 @@
 # catnip tannery
 
-A [leather](https://github.com/TGPSKI/leather) tannery that collects, reports,
-and prowls on a schedule.
+A [leather](https://github.com/TGPSKI/leather) tannery that runs catnip
+unattended: collect the account's GitHub traffic daily, write the
+deterministic report when the data lands, and every third day send an
+analyst hunting for what the report cannot say.
+
+| agent | when | does |
+|---|---|---|
+| `catnip-collect` | daily 05:07 | `catnip run`, then checks the data landed |
+| `catnip-report` | when collect delivers | writes the deterministic report |
+| `catnip-prowl-meta` | every 3rd day 08:22 | sizes the cycle, seeds N analyst briefs |
+| `catnip-prowl` | one run per brief | investigates one angle |
+| `catnip-prowl-write` | one run per package | records and publishes into the cycle |
+
+Only the fetch and the meta-analyst are on cron. Everything downstream runs
+when its input arrives: collect's output feeds the `report` curing, each
+seed feeds an analyst run, each analyst package feeds the writer. N is the
+meta's judgment of the evidence — a quiet window seeds one routine pass, a
+rich one seeds an angle per phenomenon — and collation is free: the writer's
+per-cycle files accumulate every package, and publishing dedupes.
+
+Output lands where catnip already puts reports: `report.md` from the report
+agent, `prowl.md` beside it from the prowl chain. They are separate files
+because one reproduces byte-for-byte from the store and one is inference.
+
+## What this shows
+
+- **Verdicts come from tools, not from text.** `catnip run` streams ~41
+  minutes of progress that reads identically on success and failure, so no
+  agent judges it: `catnip-verify` asserts the CSVs exist,
+  `catnip-store-status` reads the store's newest day, and the collect agent's
+  success/failed verdict cites those.
+- **Per-turn tool scoping.** Each agent is multi-turn and a turn *replaces*
+  the tool scope rather than extending it. `catnip-collect` cannot write
+  state during the turn that runs the pipeline; `catnip-report` cannot reach
+  the report writer before reading the store; `catnip-prowl` holds only
+  read tools, ever.
+- **Stages are joined by queues, not by clock arithmetic.** A producing
+  agent's lifecycle POSTs its output to leather's `/intake`, which stores it
+  as a hide and enqueues it; the consuming curing does the rest. The queue
+  name is the whole routing fact — the producer names it in the intake URL,
+  the curing names the same queue as its consumer end. Collect feeds
+  `report-in`; prowl feeds `prowl-write-in`. The writer's entire input is
+  the analysis, so it cannot re-derive anything — the evidence was never in
+  its context.
+- **Recording is one deterministic call.** The number of findings varies per
+  cycle, so a writer making one tool call per block silently drops one
+  whenever its count is off. `catnip-prowl-record` takes the whole analysis,
+  parses the blocks itself, and files them all or fails naming the block it
+  refused.
+- **Provenance is argument validation.** The recorder rejects a `tier`
+  outside `measured|inferred|speculative` and any `evidence` that does not
+  open with the catnip tool the claim rests on. A claim that names no tool
+  cannot be filed. Publishing fails on an empty cycle rather than writing an
+  empty file.
+- **`{{...}}` means a tool measured it; `<...>` means the model writes it.**
+  Extract rules on the skill carry `latest_day`, coverage, report meta and
+  the recorder's counts into later turns verbatim, so state files never
+  contain a model's transcription of a number. Only judgment fields —
+  `action`, `reason`, a finding's prose — are the model's to write.
+
+## Requirements
+
+- `catnip` on `PATH` — `make install` in the repo root. Nothing hardcodes a
+  data directory: `catnip config` resolves it, and `CATNIP_CONFIG` selects
+  between accounts.
+- Any OpenAI-compatible endpoint — point `model` and `llm_endpoint` in
+  `config.yaml` at whatever you serve. No frontier model is needed: every
+  number an agent reports comes back from a tool.
+- `leather` on `PATH`.
+
+## Run
 
 ```bash
 cd tannery
 make validate     # leather validate every agent, lifecycle and toolset
-make smoke-tools  # exec the read-only tools for real
+make smoke-tools  # exec each read-only tool's exact argv, for real
 make serve        # run the scheduler
 ```
 
-| agent | when | does |
-|---|---|---|
-| `catnip-collect` | daily 05:07 | `catnip run`, then checks it landed |
-| `catnip-report` | daily 06:52 | writes the deterministic report |
-| `catnip-prowl` | every 3rd day 08:22 | hunts what the report does not answer |
+Each stage also runs one-shot, for testing and agent validation — the served
+chain never needs these:
 
-## Turns are the bounds
-
-Each agent is multi-turn, and every turn replaces the tool scope rather than
-extending it. An agent can only reach the tools its current turn declares.
-
-```
-catnip-collect   catnip-pipeline -> catnip-inspect -> catnip-record
-catnip-report    catnip-inspect  -> catnip-report-write -> catnip-record
-catnip-prowl     catnip-evidence -> catnip-file -> catnip-publish
+```bash
+make run-collect      # fetch now
+make run-report       # write the report now
+make run-meta         # size the cycle and seed briefs now (serve must be up)
+make run-prowl-write  # ingest the newest analysis and drain it once
 ```
 
-That is the whole design. `catnip-collect` cannot write state during the turn
-that runs the pipeline. `catnip-report` cannot reach the writer until after it
-has read the store's newest day. `catnip-prowl` cannot file a finding during
-the turn it gathers evidence, and cannot gather more once it starts filing -
-so everything it files came from evidence already in context.
-
-"Test before you file" is not an instruction the prowl agent is asked to
-follow. There is no turn in which it can do otherwise.
-
-## A registry that fails to load is silent
-
-Four ways a misconfigured registry loads as zero tools while `leather validate`
-still passes. The agent keeps seeing tool names in its system prompt, so it
-fabricates: it emits the calls it meant to make as text and reports outcomes
-that never happened. Unattended at 05:07, that writes a confident, invented
-status artifact.
-
-| symptom | upstream |
-|---|---|
-| duplicate tool name across two skills kills the whole registry | [#71](https://github.com/TGPSKI/leather/issues/71) |
-| an agent resolving to zero tools runs anyway | [#72](https://github.com/TGPSKI/leather/issues/72) |
-| `toolsets:` naming a `*.skill.yaml` silently contributes nothing | [#73](https://github.com/TGPSKI/leather/issues/73) |
-| flow-style `mcp: { }` parses to an empty server | [#74](https://github.com/TGPSKI/leather/issues/74) |
-
-These belong in the runtime, not in a lint each tannery carries a copy of, so
-they are filed rather than guarded here.
-
-## Verdicts come from tools, not from text
-
-`catnip run` streams ~41 minutes of progress that reads identically whether it
-worked. No agent judges it. `catnip-verify` decides completeness by asserting
-the CSVs exist; `catnip-store-status` decides whether data landed by reading
-the store's newest day.
-
-## Provenance is argument validation
-
-`catnip_prowl_finding` rejects any `tier` outside
-`measured|inferred|speculative`, and any `evidence` not matching
-`^catnip-(report-read|view|derivation|store-series|store-status)\b`. A claim
-that names no tool cannot be filed. `catnip_prowl_publish` fails on an empty
-cycle rather than writing an empty file.
-
-Output is `prowl.md` beside the `report.md` it companions - separate files
-because one reproduces from the store and one does not.
+`make smoke-tools` execs each read-only tool's argv straight from
+`shell-tools.json`, so an argv or quoting regression surfaces here instead of
+at 05:07 with nobody watching. Writers are deliberately skipped: a smoke test
+that fetches the whole account is not a smoke test.
 
 ## Timeouts stack, innermost first
 
@@ -80,27 +102,51 @@ because one reproduces from the store and one does not.
 | 2 | lifecycle `tool_timeout` | 6000s, leather abandons the MCP call |
 | 3 | lifecycle `timeout` | 6600s, leather abandons the run |
 
-Size layer 1 off a measurement. The first draft used 2100s against a pipeline
-that takes 2459s, so it would have killed its own first real run at 35 minutes
-and called it a timeout. Layer 1 defaults to 30s when omitted, and omitting it
-fails quietly: the process dies while its child runs on as an orphan.
+Size layer 1 from a measurement: a real run took 2459s against a first-draft
+bound of 2100s, which would have killed the pipeline at 35 minutes and called
+it a timeout. Layer 1 defaults to 30s when omitted, and omitting it fails
+quietly — the process dies while its child runs on as an orphan.
 
-The schedule is a chain. A typical 41-minute collect ends 05:48 and leaves the
-report 64 minutes; a pathological 90-minute one ends 06:37 and leaves 15. If it
-ever overruns, the store has not advanced, the guard refuses, and the report
-records `skipped`.
+The chain cannot race itself: the report runs when collect delivers, however
+long the fetch took. If a fetch fails outright and the store has not
+advanced, the report writer refuses and the report records `skipped` rather
+than describing yesterday as today.
 
-## Setup
+## Known upstream issues
 
-Tools invoke `catnip` from `PATH`, so `make install` in the repo root first.
-Nothing hardcodes a data directory: `catnip config` resolves it and
-`CATNIP_CONFIG` selects between accounts.
+A misconfigured tool registry can load as zero tools while `leather validate`
+passes; the agent keeps seeing tool names in its system prompt and fabricates
+the calls as text. These are filed upstream rather than guarded here, because
+they belong in the runtime, not in a lint every tannery carries a copy of:
 
-Point `model` and `llm_endpoint` in `config.yaml` at whatever you serve. No
-frontier model is needed - every number an agent reports comes back from a
-tool.
+| symptom | upstream |
+|---|---|
+| duplicate tool name across two skills kills the whole registry | [#71](https://github.com/TGPSKI/leather/issues/71) |
+| an agent resolving to zero tools runs anyway | [#72](https://github.com/TGPSKI/leather/issues/72) |
+| `toolsets:` naming a `*.skill.yaml` silently contributes nothing | [#73](https://github.com/TGPSKI/leather/issues/73) |
+| flow-style `mcp: { }` parses to an empty server | [#74](https://github.com/TGPSKI/leather/issues/74) |
 
-`make smoke-tools` execs each read-only tool's exact argv from
-`shell-tools.json`. It is what caught `catnip view why` being unable to run at
-all. Writers are skipped: a smoke test that fetches the whole account is not a
-smoke test.
+## Files
+
+| file | purpose |
+|---|---|
+| `config.yaml` | leather config: model endpoint, API on `127.0.0.1:7751`, scheduler |
+| `tannery.yaml` | hide/artifact dirs and the `report-in` / `prowl-write-in` queues |
+| `mcp-servers.yaml` | registers shell-mcp, which serves `shell-tools.json` |
+| `shell-tools.json` | the `catnip` CLI wrapped as tools, with argv patterns and caps |
+| `tools/catnip-tools.skill.yaml` | tool wiring plus every extract rule |
+| `tools/*.toolset.yaml` | the per-turn scopes agents declare |
+| `agents/catnip-collect.agent.md` | run the pipeline, verify, record |
+| `agents/catnip-report.agent.md` | curing-driven: status, write report, record |
+| `agents/catnip-prowl-meta.agent.md` | reads the report, sizes the cycle, seeds briefs |
+| `agents/catnip-prowl.agent.md` | curing-driven analyst: one brief in, one package out |
+| `agents/catnip-prowl-write.agent.md` | curing-driven: one record call, one state write |
+| `agents/*.lifecycle.yaml` | the two cron agents' schedules, budgets and output routes |
+| `curings/report.curing.yaml` | binds `report-in` to the report agent |
+| `curings/analyze.curing.yaml` | binds `prowl-analyze-in` to the analyst, packages → writer |
+| `curings/prowl-write.curing.yaml` | binds `prowl-write-in` to the writer |
+| `scripts/prowl-dispatch.py` | parses SEED blocks, one intake POST per brief |
+| `scripts/prowl-record.py` | parses the analysis blocks, files them, publishes |
+| `scripts/store-sweep.py` | every repo with traffic on a given day, straight from the store |
+| `scripts/prowl-publish.sh` | assembles a cycle's `prowl.md`, prints the counts |
+| `scripts/tool-smoke.sh` | execs the read-only tools' real argvs |
