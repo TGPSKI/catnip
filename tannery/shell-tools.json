@@ -119,6 +119,20 @@
       "output_cap_bytes": 20000
     },
     {
+      "name": "catnip_prowl_edit_publish",
+      "description": "Replace the published prowl.md with the editor's document. Refuses a document whose measured/inferred/speculative counts differ from the cycle's recorded truth - the editor arranges, merges and cuts; it cannot drop or invent findings.",
+      "command": "python3",
+      "args": [
+        "scripts/prowl-edit-publish.py",
+        "{{document}}"
+      ],
+      "required": [
+        "document"
+      ],
+      "timeout_seconds": 30,
+      "output_cap_bytes": 2000
+    },
+    {
       "name": "catnip_prowl_dispatch",
       "description": "Dispatch EVERY SEED block in a meta-analysis as one investigation brief on the analyst queue. Takes the seeds verbatim; parsing is deterministic and happens here, so the number of briefs dispatched never depends on a model counting them. Rejects a seed missing its angle or brief, and a meta-analysis with no SEED blocks.",
       "command": "python3",

@@ -1,5 +1,5 @@
 name: prowl-write
-description: Record the prowl analysis - one call per block, then publish.
+description: Record the prowl analysis in one call, publish, then hand to the editor.
 agent: catnip-prowl-write
 queue: prowl-write-in
 page_size_bytes: 8000

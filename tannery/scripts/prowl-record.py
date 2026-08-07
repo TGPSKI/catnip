@@ -159,7 +159,24 @@ def main():
     print("cycle %s" % cycle)
     sys.stdout.flush()
     # prowl-publish.sh owns assembly and prints the authoritative counts.
-    raise SystemExit(subprocess.call(["./scripts/prowl-publish.sh", cycle]))
+    rc = subprocess.call(["./scripts/prowl-publish.sh", cycle])
+    if rc != 0:
+        raise SystemExit(rc)
+
+    # The assembled document goes to the editor before anything reaches the
+    # published prowl.md - the guarded edit-publish is the only writer there.
+    import urllib.request
+    assembled = (prowl / ("%s.assembled.md" % cycle)).read_text()
+    req = urllib.request.Request(
+        "http://127.0.0.1:7751/intake"
+        "?kind=prowl.assembled&source=prowl-record&queue=editor-in",
+        data=assembled.encode(), method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+    except Exception as e:
+        fail("recorded and assembled, but the editor handoff failed: %s" % e)
+    print("handed to editor")
 
 
 if __name__ == "__main__":

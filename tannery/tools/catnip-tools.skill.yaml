@@ -73,6 +73,12 @@ tools:
     mcp:
       server: shells
       tool: catnip_store_series
+  - name: catnip-prowl-edit-publish
+    description: "Replace the published prowl.md with the edited document; refuses changed tier counts (requires document)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_prowl_edit_publish
   - name: catnip-prowl-dispatch
     description: "Dispatch every SEED block as one analyst brief (requires cycle, window, seeds)"
     type: mcp

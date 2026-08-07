@@ -26,6 +26,13 @@ run-report: ## run the report agent once, now
 run-meta: ## size the cycle and seed analyst briefs, now (needs serve up for intake)
 	leather run --config config.yaml agents/catnip-prowl-meta.agent.md
 
+run-editor: ## one-shot: edit the newest assembled cycle through the editor queue
+	leather ingest --config config.yaml --tannery tannery.yaml \
+	  --kind prowl.assembled --source cli --curing editor --queue editor-in \
+	  $$(ls -t .state/prowl/*.assembled.md | head -1)
+	leather serve --config config.yaml --tannery tannery.yaml \
+	  --stats --run-duration 90s
+
 # One-shot testing only - the served chain feeds this queue from the prowl
 # lifecycle's intake route. This ingests the newest prowl analysis and lets
 # the curing worker drain it, to validate the writer without a schedule.

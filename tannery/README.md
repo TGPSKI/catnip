@@ -11,14 +11,19 @@ analyst hunting for what the report cannot say.
 | `catnip-report` | when collect delivers | writes the deterministic report |
 | `catnip-prowl-meta` | every 3rd day 08:22 | sizes the cycle, seeds N analyst briefs |
 | `catnip-prowl` | one run per brief | investigates one angle |
-| `catnip-prowl-write` | one run per package | records and publishes into the cycle |
+| `catnip-prowl-write` | one run per package | records into the cycle's assembly |
+| `catnip-prowl-editor` | one run per package | edits the assembly into one document |
 
 Only the fetch and the meta-analyst are on cron. Everything downstream runs
 when its input arrives: collect's output feeds the `report` curing, each
 seed feeds an analyst run, each analyst package feeds the writer. N is the
 meta's judgment of the evidence — a quiet window seeds one routine pass, a
 rich one seeds an angle per phenomenon — and collation is free: the writer's
-per-cycle files accumulate every package, and publishing dedupes.
+per-cycle files accumulate every package, and publishing dedupes into a
+staged assembly. The assembly goes to the editor before anything reaches
+`prowl.md`: the editor merges, orders and cuts, and its guarded publish —
+the only writer of the published file — refuses a document whose tier
+counts changed and skips one the cycle has advanced past.
 
 Output lands where catnip already puts reports: `report.md` from the report
 agent, `prowl.md` beside it from the prowl chain. They are separate files
@@ -141,12 +146,15 @@ they belong in the runtime, not in a lint every tannery carries a copy of:
 | `agents/catnip-prowl-meta.agent.md` | reads the report, sizes the cycle, seeds briefs |
 | `agents/catnip-prowl.agent.md` | curing-driven analyst: one brief in, one package out |
 | `agents/catnip-prowl-write.agent.md` | curing-driven: one record call, one state write |
+| `agents/catnip-prowl-editor.agent.md` | curing-driven: compose the edit, guarded publish |
 | `agents/*.lifecycle.yaml` | the two cron agents' schedules, budgets and output routes |
 | `curings/report.curing.yaml` | binds `report-in` to the report agent |
 | `curings/analyze.curing.yaml` | binds `prowl-analyze-in` to the analyst, packages → writer |
 | `curings/prowl-write.curing.yaml` | binds `prowl-write-in` to the writer |
+| `curings/editor.curing.yaml` | binds `editor-in` to the editor |
 | `scripts/prowl-dispatch.py` | parses SEED blocks, one intake POST per brief |
-| `scripts/prowl-record.py` | parses the analysis blocks, files them, publishes |
+| `scripts/prowl-record.py` | parses the analysis blocks, files them, hands to the editor |
+| `scripts/prowl-edit-publish.py` | the only writer of `prowl.md`; refuses changed counts |
 | `scripts/store-sweep.py` | every repo with traffic on a given day, straight from the store |
 | `scripts/prowl-publish.sh` | assembles a cycle's `prowl.md`, prints the counts |
 | `scripts/tool-smoke.sh` | execs the read-only tools' real argvs |

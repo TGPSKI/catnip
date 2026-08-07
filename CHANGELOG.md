@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An editor stands between assembly and the published prowl.md.** Analyst
+  packages accumulate into a staged assembly; each recorded package hands
+  the assembly to an editor that merges same-phenomenon blocks, orders the
+  document to argue account-wide first, and cuts restatements. Its publish
+  is the only writer of `prowl.md` and is guarded twice: a document whose
+  tier counts differ from its own stamped counts is refused (the editor
+  arranges, it does not drop or invent findings), and one whose stamp
+  trails the cycle's record is skipped as superseded — a fresher edit is
+  already queued behind it.
 - **Self-graded analysis depth.** A meta-analyst reads the deterministic
   report every third day, judges how much investigation the cycle deserves,
   and seeds N analyst briefs — one per distinct phenomenon, N being its

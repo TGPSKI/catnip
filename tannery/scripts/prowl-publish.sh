@@ -18,10 +18,12 @@ window_file=".state/prowl/${cycle}.window"
   echo "nothing recorded for ${cycle} - nothing to publish" >&2; exit 1; }
 
 data_dir="$(catnip config --json | python3 -c "import json,sys;print(json.load(sys.stdin)['paths']['data_dir'])")"
-latest="$(ls -1d "${data_dir}"/reports/*/ 2>/dev/null | sort | tail -1)"
-[[ -n "$latest" ]] || { echo "no report directory to publish beside - run catnip report first" >&2; exit 1; }
 
-out="${latest}prowl.md"
+# Assemble to a staged file. The editor stands between assembly and the
+# published prowl.md: the recorder sends this document to the editor queue,
+# and the guarded edit-publish is the only writer of the reports dir.
+out=".state/prowl/${cycle}.assembled.md"
+prev_published="$(ls -1d "${data_dir}"/reports/*/ 2>/dev/null | sort | tail -1)prowl.md"
 # The config's CATNIP_OWNER is blank in auto mode; the store records who it
 # actually fetched.
 owner="$(python3 -c "import json;print(json.load(open('${data_dir}/stats/history/traffic_daily.json')).get('owner') or 'this account')")"
@@ -45,7 +47,7 @@ window="$([[ -s "$window_file" ]] && head -1 "$window_file" || true)"
 # it, promoted here deterministically.
 prev_headings=".state/prowl/${cycle}.previous-headings"
 if [[ ! -f "$prev_headings" ]]; then
-  { grep '^### ' "$out" 2>/dev/null | sed 's/^### //; s/ *`[a-z]*`$//' || true; } > "$prev_headings"
+  { grep '^### ' "$prev_published" 2>/dev/null | sed 's/^### //; s/ *`[a-z]*`$//' || true; } > "$prev_headings"
 fi
 promoted=""
 if [[ -s "$prev_headings" && -n "$refutations" ]]; then
@@ -108,6 +110,10 @@ s="$(printf '%s\n' "$findings" | grep -c '^### .*`speculative`' || true)"
 r="$(printf '%s\n' "$refutations" | grep -c '^- ' || true)"
 c="$(( $(printf '%s\n' "$corrected" | grep -c '^### ' || true) + $(printf '%s\n' "$promoted" | grep -c '^- ' || true) ))"
 w="$(printf '%s\n' "$watching" | grep -c '^- ' || true)"
+
+# The counts ride inside the document so the editor's publish can tell a
+# dropped finding (fidelity failure) from a superseded document (skip).
+printf '<!-- counts measured=%s inferred=%s speculative=%s -->\n' "$m" "$i" "$s" >> "$out"
 
 printf 'wrote %s\n' "$out"
 printf '  %-12s %s\n' measured "$m" inferred "$i" speculative "$s" refuted "$r"

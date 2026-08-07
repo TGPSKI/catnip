@@ -15,3 +15,7 @@ queues:
     concurrency: 1
     max_attempts: 2
     max_depth: 50
+  editor-in:
+    concurrency: 1
+    max_attempts: 2
+    max_depth: 50
