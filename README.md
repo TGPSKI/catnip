@@ -2,7 +2,7 @@
 
 [changelog](CHANGELOG.md) | [metrics & data layout](docs/metrics.md) | [configuration](docs/configuration.md) | [automation](docs/automation.md) | [pate.sh](https://pate.sh)
 
-**GitHub keeps fourteen days of your traffic data. catnip keeps all of it.**
+**Capture, analyze, visualize, and retain GitHub repo metrics locally with one stdlib-only Python package.**
 
 Clones, views, unique cloners, popular paths, referrers, stars and forks with
 timestamps, releases, pull requests, languages, commit activity — every repo
