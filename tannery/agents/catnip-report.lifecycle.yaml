@@ -1,0 +1,9 @@
+agent: catnip-report
+schedule: "52 6 * * *"
+timeout: 600s
+tool_timeout: 420s
+tool_rounds: 10
+
+output:
+  - type: file
+    path: .state/artifacts/{{.date}}-catnip-report.txt

@@ -1,0 +1,7 @@
+name: prowl-write
+description: Record the prowl analysis - one call per block, then publish.
+agent: catnip-prowl-write
+queue: prowl-write-in
+page_size_bytes: 8000
+max_attempts: 2
+timeout_seconds: 600

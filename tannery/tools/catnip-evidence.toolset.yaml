@@ -1,0 +1,6 @@
+name: catnip-evidence
+tools:
+  - catnip-report-read
+  - catnip-view
+  - catnip-derivation
+  - catnip-store-series

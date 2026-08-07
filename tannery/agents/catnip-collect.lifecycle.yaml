@@ -1,0 +1,9 @@
+agent: catnip-collect
+schedule: "7 5 * * *"
+timeout: 6600s
+tool_timeout: 6000s
+tool_rounds: 12
+
+output:
+  - type: file
+    path: .state/artifacts/{{.date}}-catnip-collect.txt

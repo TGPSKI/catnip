@@ -1,0 +1,90 @@
+name: catnip-tools
+extract:
+  - tool: catnip-store-status
+    pattern: '"latest_day":\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"'
+    store: latest_day
+tools:
+  - name: catnip-report-read
+    description: "Print the deterministic report without writing it"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_report_read
+  - name: catnip-view
+    description: "Print one derived view as text (requires view)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_view
+  - name: catnip-derivation
+    description: "Print the formula and thresholds behind one view (requires view)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_derivation
+  - name: catnip-store-series
+    description: "Print one repo's raw daily series from the store (requires repo)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_store_series
+  - name: catnip-prowl-finding
+    description: "File one finding (requires tier, claim, body, evidence, cycle)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_prowl_finding
+  - name: catnip-prowl-refuted
+    description: "File a hypothesis that did not hold (requires hypothesis, checked_with, why_not, cycle)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_prowl_refuted
+  - name: catnip-verify
+    description: "Assert the analysis CSVs the TUI requires exist and are non-empty"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_verify
+  - name: read_state
+    description: "Read a value from a .state/ file (requires path)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: read_state
+  - name: catnip-run
+    description: "Run the full catnip pipeline"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_run
+  - name: catnip-prowl-publish
+    description: "Assemble the cycle into prowl.md beside report.md (requires cycle)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_prowl_publish
+  - name: write_state
+    description: "Write a value to a .state/ file (requires path, content)"
+    type: mcp
+    mcp:
+      server: shells
+      tool: write_state
+  - name: catnip-report-write
+    description: "Write the deterministic report; refuses when the store has not advanced"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_report_write
+  - name: catnip-report-meta
+    description: "Print the newest written report's meta.json"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_report_meta
+  - name: catnip-store-status
+    description: "Print the durable store's newest day, coverage and repo count as JSON"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_store_status

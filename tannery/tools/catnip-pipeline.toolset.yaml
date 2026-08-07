@@ -1,0 +1,3 @@
+name: catnip-pipeline
+tools:
+  - catnip-run

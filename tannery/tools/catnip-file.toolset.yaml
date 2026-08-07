@@ -1,0 +1,4 @@
+name: catnip-file
+tools:
+  - catnip-prowl-finding
+  - catnip-prowl-refuted

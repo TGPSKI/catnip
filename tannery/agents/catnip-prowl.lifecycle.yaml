@@ -1,0 +1,12 @@
+agent: catnip-prowl
+schedule: "22 8 */3 * *"
+timeout: 1800s
+tool_timeout: 420s
+tool_rounds: 12
+max_tokens: 32768
+
+output:
+  - type: file
+    path: .state/artifacts/{{.date}}-catnip-prowl.txt
+  - type: queue
+    queue: prowl-write-in
