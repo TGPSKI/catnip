@@ -14,4 +14,4 @@ Pipeline, in the order the data moves:
 about GitHub.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

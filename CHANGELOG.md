@@ -5,9 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-06
 
 ### Added
+
+- **Store schema 3 — popular paths are ingested.** `/traffic/popular/*`
+  is a rolling ~14-day top-10, exactly like the traffic endpoints, so a
+  path that leaves the window can never be requested again. Paths lived
+  only inside run directories, which means `catnip prune` destroyed them
+  — and the retention guard did not object, because it tests
+  `fetches_ingested`, a flag set from *traffic* ingestion. A run could
+  pass the check with every clone and view day safely stored while still
+  holding the only copy of its path observations. Now dated the day they
+  were observed, exactly as schema 2 already did for referrers: same
+  endpoint pair, same rolling semantics, and no principle ever separated
+  them. Backfilled from runs still on disk.
+- **The funnel reads the store.** `derive.path_rows` and
+  `derive.funnel_rows` serve `0:funnel` and its top-pages pane, so both
+  survive pruning and store-only mode instead of going blank. Verified
+  byte-identical against the CSV-backed path with runs present and with
+  every run deleted. `4:lang` is now the only view that still needs a
+  run, and language bytes are current state that refetch on the next one.
 
 - **`derive.py` — every windowed number, computed from the durable daily
   store alone.** Windows, deltas and rates, audience components, clone
@@ -273,6 +291,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   referrers and reconstructed star/fork series.
 
 ### Fixed
+
+- **`catnip config --json` never worked.** The dispatcher hardcoded
+  `--show`, one of an argparse mutually-exclusive group, so every
+  invocation argparse-errored. It is the documented way an agent locates
+  the store — `catnip-prowl` opens its raw-material section with it — so
+  a skill following its own instructions failed on the first command.
+  The arm existed and dispatched; it ate the flag the caller asked for.
+- **`esc` quit the application from inside a focused pane.** `[space]`
+  and `[tab]` move *into* a pane, but pane focus was not a layer on the
+  escape stack, so escape fell through to quit and closed the TUI from a
+  screen the operator was still reading. Escape now unwinds one layer at
+  a time: overlay, search, pane focus, then quit.
+- **Truncated key hints in three of five detail views** — "[j/k] next
+  findin", "next pai". Each call site carried its own `max_x - <literal>`
+  offset and the literals had drifted from the strings they positioned.
 
 - **`esc` quit the application from inside a focused pane.** `[space]`
   and `[tab]` move *into* a pane — the funnel's top-pages list, the
