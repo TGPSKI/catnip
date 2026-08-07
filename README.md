@@ -22,14 +22,20 @@ catnip tui                      # read it
 
 ## See it run
 
-<img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over 98 repositories. The traffic view opens on daily views and clones as bar charts. The audience view classifies each repo as audience, mixed, crawler or low-signal from its clones-per-unique-visitor ratio, and pressing ? opens a derivation overlay giving the formula, weights, thresholds and withheld components behind that score. The attribution view lists what moved and the release or push that plausibly caused it, tiered direct, coupled, account, dip, unexplained and no-effect; space opens one finding in full - a dip on the 6th of August with no cause recorded in the store, its daily clone series, the median, MAD, mean absolute deviation and z-score the tier rests on, and what else was true that day. The deltas view shows signed windowed change and per-day rate, and space opens momentum: the daily level, the day-over-day derivative around a zero line, and a fitted slope reading clones falling 1.15 per day and decelerating. The anomaly view is a repo-by-day heatmap above a sortable list of account events, and tab then space opens one - the 30th of July, five repos, leather spiking to a modified z-score of 81.6 on 308 clones against a median of 6, attributed to 8 commits that day. The funnel view shades each repo by its own busiest content category with a depth column, and space opens that repo's actual pages with views and uniques. The demo closes on the repo table and a repo drilldown, showing daily charts annotated by release, push and anomaly markers on the days that caused them, unique cloners against unique visitors, and a CONFLICT flag where the clone-intent score reads developer while the audience classification reads crawler."/>
+<img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over a 43-repository account. The traffic view opens on daily views and clones as bar charts, 8.9k views in the last 14 days. The audience view classifies each repo as audience, mixed, crawler or low-signal from its clones-per-unique-visitor ratio, and pressing ? opens a derivation overlay giving the formula, weights, thresholds and withheld components behind that score. The attribution view lists 103 findings of what moved and the release or push that plausibly caused it, tiered direct, coupled, account, dip, unexplained and no-effect; space opens one in full - a no-effect finding where five commits shipped and nothing followed, with the daily series, the median, MAD, mean absolute deviation and z-score the tier rests on, and what else was true that day. The deltas view shows signed windowed change and per-day rate, and space opens momentum: the daily level, the day-over-day derivative around a zero line, and a fitted slope. The anomaly view is a repo-by-day heatmap above a sortable list of account events, and tab then space opens one - the 31st of July, nine repos departed from their own normal and two of them shipped something that day. The funnel view shades each repo by its own busiest content category with a depth column, and space opens that repo's actual pages with views and uniques. The demo closes on the repo table and a repo drilldown of a crawler: 318 clones in one day against a baseline near 15, 158 unique cloners against 5 unique visitors, and a CONFLICT flag where the clone-intent score reads developer while the audience classification reads crawler."/>
 
-*`catnip tui` over one real account's 98 public repositories — the audience view
-separating people from fetcher fleets, `[?]` explaining exactly how that score
-was computed, a movement attributed to its cause and the statistics behind that
-call, momentum, the anomaly heatmap with one account event opened in full, the
-content funnel, and `[space]` opening a repo's drilldown. Everything here is on
-disk after one `catnip run`.*
+*`catnip tui` over a synthetic account — the audience view separating people
+from fetcher fleets, `[?]` explaining exactly how that score was computed, a
+movement attributed to its cause and the statistics behind that call, momentum,
+the anomaly heatmap with one account event opened in full, the content funnel,
+and `[space]` opening a repo's drilldown.*
+
+*The data is generated, not collected: the shapes are designed so the demo
+always contains a crawler fleet, an extreme anomaly with a visible cause, a
+release that did nothing and a coupled pair. Every number on screen is still
+computed by the shipping pipeline — `analyze`, `history`, `totals` and
+`derive.py` all run for real; only the API responses underneath are synthetic.
+Point catnip at your own account and you get the same screens.*
 
 ## The pipeline, and the agent on top of it
 
