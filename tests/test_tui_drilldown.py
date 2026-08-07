@@ -926,7 +926,9 @@ class FunnelExplainerTests(unittest.TestCase):
             self.assertLess(len(got[0]) + 1, cols, cols)
 
     def test_the_widest_terminal_gets_every_clause(self):
-        self.assertIn("over-counts", self._explainer(200)[0])
+        # The last clause is the one a narrow terminal drops, so asserting
+        # on it proves the widest terminal kept the whole line.
+        self.assertIn("NOT repo traffic", self._explainer(200)[0])
 
     def test_the_rolling_window_caveat_survives_the_demo_width(self):
         # It lives in the title precisely so it cannot be dropped: at 150

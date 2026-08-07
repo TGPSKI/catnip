@@ -81,7 +81,7 @@ Everything below is store-scoped instead, and lives in
 TUI, `catnip view`, and `catnip report`, so the three can never disagree
 about the same day. `[?]` in the TUI prints these definitions from
 `DERIVATIONS` rather than from prose, which is what keeps this page and
-the screen in step. `catnip view why --timeframe <view>` prints the same
+the screen in step. `catnip view why <view>` prints the same
 thing headlessly.
 
 **Anomaly severity** — a modified z-score on each repo's daily series:

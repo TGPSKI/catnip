@@ -232,3 +232,22 @@ class DispatcherModeTests(unittest.TestCase):
             out = self._run(conf=conf)
             self.assertEqual(out.returncode, 0, out.stderr)
             self.assertIn("owner", out.stdout)
+
+    def test_view_why_prints_the_named_view_s_derivation(self):
+        # `catnip view why <name>` is how the docs and the catnip-prowl skill
+        # tell you to read a derivation from the shell. It could not run: the
+        # view name was taken from --timeframe, which argparse restricts to
+        # 1d/1w/2w/all/epoch, so the name was rejected and a bare
+        # `view why` asked derive for the derivation of "2w".
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "catnip.conf"
+            conf.write_text(f"CATNIP_OWNER=x\nCATNIP_DATA_DIR={tmp}\n", encoding="utf-8")
+            out = subprocess.run(
+                [str(root / "bin" / "catnip"), "view", "why", "audience"],
+                capture_output=True, text=True,
+                env={"PATH": "/usr/bin:/bin", "HOME": tmp, "CATNIP_CONFIG": str(conf)})
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertIn("AUDIENCE", out.stdout)
+            self.assertIn("uniq_cloners", out.stdout)

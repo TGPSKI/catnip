@@ -2741,8 +2741,8 @@ class AnalyticsTUI(TuiApp):
 
     FUNNEL_SORT_KEYS = (
         ('depth', lambda r: (r['depth_ratio'], r['total']), True),
-        ('views', lambda r: r['total'], True),
-        ('uniq', lambda r: (r['uniq'], r['total']), True),
+        ('pgviews', lambda r: r['total'], True),
+        ('pguniq', lambda r: (r['uniq'], r['total']), True),
         ('name', lambda r: r['repo'].lower(), False),
     )
 
@@ -2868,7 +2868,7 @@ class AnalyticsTUI(TuiApp):
         clauses = ['Row = one repo, shaded by its OWN busiest category',
                    'depth = (docs+code+tree)/home',
                    '* = no home views',
-                   'uniq sums per-page uniques, so it over-counts']
+                   'pgviews/pguniq sum GitHub\'s top 10 pages, NOT repo traffic']
         line = clauses[0]
         for clause in clauses[1:]:
             if len(line) + len(clause) + 3 > max_x - 2:
@@ -2900,7 +2900,7 @@ class AnalyticsTUI(TuiApp):
         columns = [c for c, _n in sorted(totals.items(), key=lambda kv: -kv[1])][:10]
         name_w = min(22, max(10, max_x - 4 * len(columns) - 30))
 
-        self._put(6, 3 + name_w + 1 + 5 * len(columns) + 2, 'depth   views   uniq',
+        self._put(6, 3 + name_w + 1 + 5 * len(columns) + 2, 'depth  pgviews  pguniq',
                   curses.color_pair(2) | self.curses.A_BOLD)
         # Reserve the bottom third for the selected repo's actual pages —
         # a category mix says what KIND of page was read, never which one.
@@ -3461,7 +3461,7 @@ class AnalyticsTUI(TuiApp):
 
 # ---- text mode ---------------------------------------------------------------
 
-def render_text_view(data, view, timeframe='2w'):
+def render_text_view(data, view, timeframe='2w', why_view=None):
     """Print one view as a plain table.
 
     The agent-facing surface. It reads the same derive functions the TUI
@@ -3548,7 +3548,7 @@ def render_text_view(data, view, timeframe='2w'):
             print(f'  {r["repo"]:<30} depth={r["depth_ratio"]:>6.2f} '
                   f'views={r["total"]:>6}  {mix}')
     elif view == 'why':
-        for line in derive.derivation(timeframe):
+        for line in derive.derivation(why_view or 'traffic'):
             print(line)
     else:
         render_text(data, timeframe)
@@ -3622,6 +3622,13 @@ def main(argv=None):
     parser.add_argument('--view', choices=(*VIEWS, 'why'), default='traffic',
                         help='Initial view; with --text, which view to print. '
                              "'why' prints a derivation instead of data.")
+    # `why` needs to know which view's derivation to print. It used to read
+    # that from --timeframe, which argparse restricts to 1d/1w/2w/all/epoch —
+    # so `catnip view why audience` was rejected and `catnip view why` alone
+    # asked derive for the derivation of "2w". The documented way to print a
+    # derivation from the shell could not run at all.
+    parser.add_argument('--why-view', choices=VIEWS, default=None,
+                        help="With --view why: which view's derivation to print.")
     parser.add_argument('--history-file',
                         help='Durable daily store to read (default: from config).')
     parser.add_argument('--stats-file',
@@ -3636,6 +3643,16 @@ def main(argv=None):
     except ConfigError as exc:
         print(f'catnip: config error: {exc}', file=sys.stderr)
         return 2
+
+    # A derivation is documentation, not data: it is static text describing
+    # a formula. Printing it needed a populated store only because it rode
+    # the same path as the views, so `catnip view why audience` failed on a
+    # fresh install — exactly when someone is most likely to ask what a
+    # number will mean before collecting any.
+    if args.text_mode and args.view == 'why':
+        for line in derive.derivation(args.why_view or 'traffic'):
+            print(line)
+        return 0
 
     history_file = Path(args.history_file) if args.history_file else cfg.history_file
     stats_file = Path(args.stats_file) if args.stats_file else cfg.stats_file
@@ -3659,7 +3676,7 @@ def main(argv=None):
     data = AnalyticsData(run_dir, stats_file, history_file)
     if args.text_mode:
         if args.view != 'traffic':
-            render_text_view(data, args.view, args.timeframe)
+            render_text_view(data, args.view, args.timeframe, args.why_view)
         else:
             render_text(data, args.timeframe)
     else:
