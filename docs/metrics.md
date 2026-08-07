@@ -165,7 +165,13 @@ far past the front door traffic actually got.
 
 Schema 2 added `events`, `referrers` and the star/fork series — the
 inputs behind attribution, the referrer component of the audience score,
-and the epoch view. Ingest skips runs already listed in
+and the epoch view. Schema 3 added `paths`, dated the same way referrers
+are: `/traffic/popular/*` is rolling, so paths that lived only in run
+directories were destroyed by `catnip prune` and could never be
+refetched. Only the top ten paths per repo are ever returned, so the
+stored series is a biased sample — a page that never cracks the cut is
+invisible, and one that drops out looks like it stopped rather than fell
+below the line. Ingest skips runs already listed in
 `fetches_ingested`, so a schema bump has to **backfill explicitly**:
 declaring the new sections and waiting for the next run leaves them
 permanently empty for every day already collected, and the views built on

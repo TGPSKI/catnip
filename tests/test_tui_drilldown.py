@@ -208,26 +208,49 @@ class StoreOnlyTests(unittest.TestCase):
         self.assertTrue(all(r["clones"] or r["views"] for r in app._table_rows()))
 
     def test_unmeasured_columns_are_dashes_not_zeros(self):
-        # A repo with no path data has not been measured as shallow, and a
-        # repo with no run has not been measured as unstarred.
+        # Stars come from a run's repo CSV, so store-only they are
+        # unmeasured — not zero. Depth is measured now: paths live in the
+        # store from schema 3 on.
         app = build_tui(self.data(), 40, 140, "table")
         row = app._table_rows()[0]
-        self.assertIsNone(row["depth"])
         self.assertIsNone(row["stars_per_uv"])
+        self.assertIsNotNone(row["depth"], "paths should survive without runs")
         app.render(40, 140)
         text = " ".join(t for _y, _x, t in app.writes)
         self.assertNotIn("0.00   0.00", text)
 
+    def test_depth_is_unmeasured_when_the_store_predates_paths(self):
+        # The dash-not-zero rule still has to hold for a schema-2 store,
+        # which has no `paths` section at all.
+        import json
+        older = json.loads(self.store.read_text())
+        older.pop("paths", None)
+        older["schema_version"] = 2
+        path = self.root / "schema2.json"
+        path.write_text(json.dumps(older))
+        app = build_tui(AnalyticsData(None, self.totals, path), 40, 140, "table")
+        self.assertIsNone(app._table_rows()[0]["depth"])
+
     def test_per_run_views_explain_why_they_are_empty(self):
         # "Run catnip analyze first" sends the operator to a command that
         # answers "no runs found".
-        for view in ("funnel", "lang"):
-            app = build_tui(self.data(), 40, 140, view)
-            app.render(40, 140)
-            text = " ".join(t for _y, _x, t in app.writes)
-            self.assertIn("No run on disk", text, view)
-            self.assertIn("catnip run", text, view)
-            self.assertNotIn("catnip analyze  to rebuild", text, view)
+        # `lang` is the only view left that genuinely needs a run: language
+        # bytes are current state and refetch. Paths used to be here too,
+        # until they were ingested — they could not be refetched, so a
+        # pruned run destroyed them.
+        app = build_tui(self.data(), 40, 140, "lang")
+        app.render(40, 140)
+        text = " ".join(t for _y, _x, t in app.writes)
+        self.assertIn("No run on disk", text)
+        self.assertIn("catnip run", text)
+        self.assertNotIn("catnip analyze  to rebuild", text)
+
+    def test_the_funnel_survives_without_a_run(self):
+        app = build_tui(self.data(), 40, 140, "funnel")
+        app.render(40, 140)
+        text = " ".join(t for _y, _x, t in app.writes)
+        self.assertNotIn("No run on disk", text)
+        self.assertTrue(app.data.funnel_data, "funnel_data empty store-only")
 
 
 class TrafficListTests(unittest.TestCase):

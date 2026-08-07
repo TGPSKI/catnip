@@ -171,6 +171,15 @@ class AnalyticsData:
                     self.history = json.load(fh)
             except (json.JSONDecodeError, OSError):
                 self.history = {}
+        # Paths moved into the store at schema 3. Prefer it: the run CSV
+        # holds one rolling snapshot that `catnip prune` eventually
+        # deletes, while the store keeps every observation. Same content
+        # today, but the funnel no longer goes blank once runs age out.
+        stored_paths = derive.path_rows(self.history)
+        if stored_paths:
+            self.traffic_paths = stored_paths
+            self.funnel_data = derive.funnel_rows(self.history)
+
         self.history_all = {'clones': {}, 'views': {}}
         for repo, metrics in (self.history.get('repos') or {}).items():
             if not repo:

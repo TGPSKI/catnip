@@ -869,6 +869,48 @@ DEPTH_CATEGORIES = ("doc_blob", "code_blob", "src_blob", "dir_tree")
 FRONT_DOOR = "overview"
 
 
+def path_rows(store):
+    """Popular paths from the store, in the shape the run CSV produced.
+
+    The newest observation per repo, not a union across days: GitHub
+    returns a rolling ~14-day top-10, so each stored day IS a complete
+    snapshot of that window and stacking several would double-count the
+    days they overlap. Reading the newest reproduces exactly what the run
+    CSV said, with the one difference that matters — it survives `catnip
+    prune`, which used to delete the only copy.
+
+    Returns [] when the store predates schema 3, so callers fall back to
+    the CSV rather than showing an empty funnel on an old store.
+    """
+    section = store.get("paths") or {}
+    out = []
+    for repo, by_day in section.items():
+        if not by_day:
+            continue
+        newest = max(by_day)
+        for path, value in by_day[newest].items():
+            count = value[0] if len(value) > 0 else 0
+            uniques = value[1] if len(value) > 1 else 0
+            title = value[2] if len(value) > 2 else ""
+            out.append({"repo_name": repo, "path": path, "title": title,
+                        "count": str(count), "uniques": str(uniques),
+                        "observed": newest})
+    return out
+
+
+def funnel_rows(store):
+    """Classified path rows from the store, replacing traffic_funnel.csv.
+
+    The CSV is `path_rows` plus a category, and the classifier is pure —
+    so deriving it here costs one function call per path and removes the
+    funnel's last dependency on a run directory surviving.
+    """
+    from catnip.traffic_funnel import classify_path
+    return [dict(row, category=classify_path(row["path"]),
+                 view_count=row["count"], unique_visitors=row["uniques"])
+            for row in path_rows(store)]
+
+
 def funnel_depth(funnel_rows):
     """Per-repo category mix and how far past the front door traffic got.
 
@@ -876,10 +918,11 @@ def funnel_depth(funnel_rows):
                       / max(overview, 1)
 
     One number for "did anyone read anything, or did they bounce off the
-    README". Path data is per-run and inherently a rolling 14-day
-    snapshot — GitHub exposes no dated path history — so unlike every
-    other function here this one reads the run's CSV and does not respond
-    to the timeframe selector. The views that show it say so.
+    README". Each observation is a rolling 14-day top-10 — GitHub offers
+    no per-day path history — so this still does not respond to the
+    timeframe selector, and the views that show it say so. What it no
+    longer depends on is a run directory: `path_rows` serves the newest
+    stored observation, so the funnel outlives `catnip prune`.
     """
     by_repo = defaultdict(lambda: defaultdict(int))
     uniq_by_repo = defaultdict(int)

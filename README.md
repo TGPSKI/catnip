@@ -2,12 +2,13 @@
 
 [changelog](CHANGELOG.md) | [metrics & data layout](docs/metrics.md) | [configuration](docs/configuration.md) | [automation](docs/automation.md) | [pate.sh](https://pate.sh)
 
-**Capture, analyze, visualize, and retain GitHub repo metrics locally with one stdlib-only Python package.**
+**Capture, analyze, visualize, and retain GitHub repo metrics locally with stdlib-only Python.**
 
 Clones, views, unique cloners, popular paths, referrers, stars and forks with
 timestamps, releases, pull requests, languages, commit activity — every repo
-you own or administer, collected daily into a store that is never pruned, read
-in your terminal.
+you own or administer, collected daily and read in your terminal. Traffic,
+popular paths, referrers and release/push events go into a permanent store
+that is never pruned.
 
 Python 3.10+ (stdlib only) and the [GitHub CLI](https://cli.github.com). No
 service, no build step, no data leaving your machine.
@@ -25,7 +26,6 @@ claude "/catnip-onboarding"
 opencode run "/catnip-onboarding"
 
 # CLI quickstart
-make install                    # symlinks bin/catnip into ~/.local/bin
 catnip init                     # write a config (or --owner X --no-input)
 catnip run                      # fetch -> analyze -> history -> totals -> verify
 
@@ -34,7 +34,8 @@ catnip tui                      # terminal data visualization
 catnip report                   # deterministic analysis
 
 # Automate
-catnip timer install            # automate daily data collection
+catnip timer install            # automate collection with systemd
+catnip timer cron               # automate collection with cron
 ```
 
 ## Agent Integrations
@@ -45,7 +46,7 @@ catnip timer install            # automate daily data collection
 |---|---|
 | [**`catnip-onboarding`**](.agents/skills/catnip-onboarding/SKILL.md) | guided install from fresh clone to full automation |
 | [**`catnip-triage`**](.agents/skills/catnip-triage/SKILL.md) | guided troubleshooting |
-| [**`catnip-prowl`**](.agents/skills/catnip-prowl/SKILL.md) | deterministi analysis and agentic inference  |
+| [**`catnip-prowl`**](.agents/skills/catnip-prowl/SKILL.md) | deterministic analysis and agentic inference  |
 
 Integrate with your harness:
 
@@ -57,11 +58,12 @@ make link-agents HARNESSES=".aider"       # or wherever yours looks
 ## Deterministic reports and agentic inference
 
 `catnip report` writes deterministic markdown from the store to
-`<data>/reports/<UTC stamp>/report.md`: totals and change, movers with trend,
-attribution, account events, audience, clone intent, coupling, depth, and a
-section on what it cannot tell you. Same store + timeframe = byte-identical
-output; every figure tagged `measured`. It refuses to run again until the
-store's newest day advances; `--force` overrides.
+`<data>/reports/<UTC stamp>/report.md`: totals and change, movers with trend, attribution, account events, audience, clone intent, coupling, depth, and data limitations.
+
+Same store and timeframe produce byte-identical output, and every figure is
+tagged `measured`. A second report over an unchanged store refuses to write —
+catnip collects daily, so that would be one finding printed twice. `--force`
+overrides it; `--stdout` prints without writing and is never gated.
 
 `catnip-prowl` is the inferential pass: hypotheses the report doesn't ask,
 tested against the raw data, refutations reported with the findings. It
@@ -75,7 +77,7 @@ writes `prowl.md` beside `report.md`, so the reproducible file diffs clean.
 
 ## See it run
 
-*Visualizing data with `catnip tui` after `catnip run` data collection.*
+*Visualizing data with `catnip tui` after simulated `catnip run` data collection.*
 
 <img src="docs/media/demo.gif" alt="Animated GIF of a terminal running 'catnip tui' over a 43-repository account. The traffic view opens on daily views and clones as bar charts, 8.9k views in the last 14 days. The audience view classifies each repo as audience, mixed, crawler or low-signal from its clones-per-unique-visitor ratio, and pressing ? opens a derivation overlay giving the formula, weights, thresholds and withheld components behind that score. The attribution view lists 103 findings of what moved and the release or push that plausibly caused it, tiered direct, coupled, account, dip, unexplained and no-effect; space opens one in full - a no-effect finding where five commits shipped and nothing followed, with the daily series, the median, MAD, mean absolute deviation and z-score the tier rests on, and what else was true that day. The deltas view shows signed windowed change and per-day rate, and space opens momentum: the daily level, the day-over-day derivative around a zero line, and a fitted slope. The anomaly view is a repo-by-day heatmap above a sortable list of account events, and tab then space opens one - the 31st of July, nine repos departed from their own normal and two of them shipped something that day. The funnel view shades each repo by its own busiest content category with a depth column, and space opens that repo's actual pages with views and uniques. The demo closes on the repo table and a repo drilldown of a crawler: 318 clones in one day against a baseline near 15, 158 unique cloners against 5 unique visitors, and a CONFLICT flag where the clone-intent score reads developer while the audience classification reads crawler."/>
 
@@ -126,11 +128,16 @@ no run directory at all: `--store-only`, `--history-file`, `--stats-file`.
 That is the state `catnip prune` eventually leaves behind, and it is the one
 consequence `CATNIP_RETAIN_DAYS` has beyond disk. Every *windowed* number
 survives, because `derive.py` computes it from the store: traffic, audience,
-deltas, anomalies, attribution, coupling, intent, momentum. Two views go empty
-— `4:lang` and `0:funnel` — because what they need is not a daily series and so
-was never in the store. Language bytes are a current-state fact, and GitHub
-serves popular paths as a rolling snapshot with no per-day breakdown, so there
-is nothing to keep a series of.
+deltas, anomalies, attribution, coupling, intent, momentum.
+
+One view goes empty: `4:lang`. Language bytes are current state and come back
+on the next run, so losing them costs nothing.
+
+Popular paths used to go with it, and that one was a real leak —
+`/traffic/popular/*` serves a rolling ~14 days, so a pruned run took the only
+copy of observations GitHub will not serve again. Paths are ingested as of
+store schema 3, dated the day they were observed, exactly as referrers are.
+The funnel now reads the store and survives pruning.
 
 ## Data, sources, storage, and retention
 
@@ -176,10 +183,10 @@ stats/
 * Documentation: [docs/configuration.md](docs/configuration.md) 
 
 ```ini
-CATNIP_OWNER=octocat            # blank = the authenticated gh account
+CATNIP_OWNER=octocat
 CATNIP_EXCLUDE=dotfiles *-private
 CATNIP_INCLUDE_FORKS=false
-CATNIP_RETAIN_DAYS=30           # see ### Data retention
+CATNIP_RETAIN_DAYS=30           
 CATNIP_TIMER_ONCALENDAR=daily
 ```
 
@@ -207,11 +214,11 @@ systemd: `catnip timer cron`. macOS/launchd and the silent-failure modes:
 | `catnip analyze` | Re-derive analysis CSVs for a run |
 | `catnip history` | Ingest runs into the permanent store |
 | `catnip totals` | Rebuild account-wide totals |
-| `catnip verify` | Assert every artifact the TUI reads exists |
+| `catnip verify` | Assert the analysis CSVs the TUI requires exist and are non-empty |
 | `catnip tui` / `view` | Interactive UI / one view as text |
 | `catnip report` | Deterministic markdown analysis of the store (`--stdout`, `--force`) |
 | `catnip summary` | The newest run's `summary.md` |
-| `catnip prune` | Delete run directories past their retention — never one the store lacks. Dry-run by default |
+| `catnip prune` | Delete run directories past their retention — never one whose traffic days are missing from the store. Dry-run by default |
 | `catnip timer` | `install` · `status` · `logs` · `uninstall` · `print` · `cron` |
 
 ## Go deeper

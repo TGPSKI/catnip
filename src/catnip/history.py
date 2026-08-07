@@ -34,11 +34,15 @@ from pathlib import Path
 from catnip.config import Config, ConfigError
 from catnip.config import run_dirs as list_fetch_dirs
 
-# 2 adds the `referrers` and `events` sections. Both are additive and every
-# reader reaches them through .get(), so a version-1 store stays readable and
-# simply gains the sections on its next ingest — a store is never rewritten
-# to fit a schema, because the store is the copy that cannot be refetched.
-SCHEMA_VERSION = 2
+# 2 adds the `referrers` and `events` sections; 3 adds `paths`, which had
+# been living only in run directories and so was destroyed by `catnip prune`
+# despite coming from the same rolling endpoint as referrers. All additive,
+# and every reader reaches them through .get(), so an older store stays
+# readable and simply gains the sections on its next ingest — a store is
+# never rewritten to fit a schema, because it is the copy that cannot be
+# refetched. New sections must also be BACKFILLED from runs already marked
+# ingested, or the store declares them and never fills them.
+SCHEMA_VERSION = 3
 GAP_DAYS = 14  # a fetch covers ~14 trailing days; a larger gap = new era
 
 
@@ -112,6 +116,43 @@ def merge_referrers(store, fetch_dir, day):
         prev = slot.get(ref)
         slot[ref] = ([count, uniques] if prev is None
                      else [max(prev[0], count), max(prev[1], uniques)])
+        seen += 1
+    return seen
+
+
+def merge_paths(store, fetch_dir, day):
+    """Per-repo popular paths, stored under the day they were observed.
+
+    `/traffic/popular/paths` is a rolling ~14-day top-10, exactly like the
+    traffic endpoints: a path that fell out of the window cannot be asked
+    for again. Until this existed, paths lived only inside run directories
+    — so `catnip prune` deleted the sole copy of observations GitHub will
+    never serve twice, and the ingest guard did not catch it because that
+    guard only knows about traffic days.
+
+    Two caveats the funnel has to keep saying out loud, because storing
+    the data does not make them go away. Only the top ten paths per repo
+    are ever returned, so a page that never cracks the cut is invisible
+    and one that drops out looks like it stopped rather than fell below
+    it. And uniques are per-path, so summing them over-counts a reader who
+    viewed two pages.
+
+    Max-merge per (repo, day, path), for the reason traffic does it: two
+    runs on one day see the same rolling window at different moments.
+    """
+    section = store.setdefault("paths", {})
+    seen = 0
+    for row in read_csv_rows(fetch_dir / "analysis" / "github_traffic_paths.csv"):
+        repo, path = row.get("repo_name", ""), row.get("path", "")
+        if not repo or not path:
+            continue
+        slot = section.setdefault(repo, {}).setdefault(day, {})
+        count, uniques = safe_int(row.get("count")), safe_int(row.get("uniques"))
+        title = row.get("title", "")
+        prev = slot.get(path)
+        slot[path] = ([count, uniques, title] if prev is None
+                      else [max(prev[0], count), max(prev[1], uniques),
+                            prev[2] if len(prev) > 2 and prev[2] else title])
         seen += 1
     return seen
 
@@ -247,13 +288,14 @@ def ingest(runs_dir, history_dir, owner, rebuild=False):
     # `fetches_ingested` is what makes ingest cheap, and max-merge already
     # guarantees the days are right.
     backfill = []
-    if any(section not in store for section in ("referrers", "events")):
+    if any(section not in store for section in ("referrers", "events", "paths")):
         done = [d for d in list_fetch_dirs(runs_dir)
                 if d.name in ingested
                 and (d / "analysis" / "github_traffic_timeseries.csv").is_file()]
         backfill = done
         store.setdefault("referrers", {})
         store.setdefault("events", {})
+        store.setdefault("paths", {})
 
     if not new_dirs and not backfill:
         print(f"Nothing to ingest ({len(ingested)} runs already in store).")
@@ -262,19 +304,22 @@ def ingest(runs_dir, history_dir, owner, rebuild=False):
     for fetch_dir in backfill:
         day = f"{fetch_dir.name[:4]}-{fetch_dir.name[4:6]}-{fetch_dir.name[6:8]}"
         refs = merge_referrers(store, fetch_dir, day)
+        paths = merge_paths(store, fetch_dir, day)
         rel, push = merge_events(store, fetch_dir)
         print(f"  Backfilled {fetch_dir.name}: {refs} referrer rows, "
-              f"{rel} releases, {push} commit-days")
+              f"{paths} path rows, {rel} releases, {push} commit-days")
 
     for fetch_dir in new_dirs:
         points = merge_fetch(store, fetch_dir)
         day = f"{fetch_dir.name[:4]}-{fetch_dir.name[4:6]}-{fetch_dir.name[6:8]}"
         refs = merge_referrers(store, fetch_dir, day)
+        paths = merge_paths(store, fetch_dir, day)
         rel, push = merge_events(store, fetch_dir)
         snaps = append_snapshots(jsonl_path, fetch_dir)
         ingested.add(fetch_dir.name)
         print(f"  Ingested {fetch_dir.name}: {points} series points, {snaps} snapshots, "
-              f"{refs} referrer rows, {rel} new releases, {push} commit-days")
+              f"{refs} referrer rows, {paths} path rows, {rel} new releases, "
+              f"{push} commit-days")
 
     latest = max(new_dirs or backfill, key=lambda d: d.name)
     store["stars_by_month"] = events_by_month(latest, "github_stargazer_events.csv", "starred_at")

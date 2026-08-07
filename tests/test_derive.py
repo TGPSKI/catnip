@@ -130,8 +130,8 @@ class DeltaTests(unittest.TestCase):
 class ModifiedZTests(unittest.TestCase):
 
     def test_mad_zero_series_still_scores_its_spike(self):
-        # The live failure: one repo sat at zero for eleven days and
-        # then took 421 clones. MAD is 0, the textbook formula divides by it
+        # The live failure: a repo sat at zero for eleven days and then
+        # took 421 clones. MAD is 0, the textbook formula divides by it
         # and returns 0.00, and the largest event in the account never
         # reached the screen.
         values = [0] * 11 + [421, 120, 0]
