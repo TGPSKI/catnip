@@ -75,7 +75,17 @@ case "$cmd" in
 
   init)     exec "$PYTHON" -m catnip.init "$@" ;;
   doctor)   exec "$PYTHON" -m catnip.doctor "$@" ;;
-  config)   exec "$PYTHON" -m catnip.config --show "$@" ;;
+  # --show is the default, but it is one of a mutually exclusive group, so
+  # hardcoding it made `catnip config --json` argparse-error every time —
+  # a documented agent surface that never once worked. Only supply the
+  # default when the caller named no mode of their own.
+  config)
+    case " $* " in
+      *" --json "*|*" --shell "*|*" --select "*|*" --show "*)
+        exec "$PYTHON" -m catnip.config "$@" ;;
+      *)
+        exec "$PYTHON" -m catnip.config --show "$@" ;;
+    esac ;;
 
   fetch)    exec bash "$ROOT/src/catnip/fetch.sh" "$@" ;;
   analyze)  exec "$PYTHON" -m catnip.analyze "$@" ;;

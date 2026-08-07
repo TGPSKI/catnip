@@ -140,7 +140,7 @@ far past the front door traffic actually got.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "owner": "octocat",
   "fetches_ingested": ["20260804T031500Z", "20260805T031722Z"],
   "coverage": [["2026-07-23", "2026-08-05"]],
@@ -158,6 +158,7 @@ far past the front door traffic actually got.
     }
   },
   "referrers": {"catnip": {"2026-07-23": {"news.ycombinator.com": [88, 59]}}},
+  "paths": {"catnip": {"2026-07-23": {"/octocat/catnip": [64, 37, "Overview"]}}},
   "stars_by_month": {"catnip": {"2026-07": 12}},
   "forks_by_month": {"catnip": {"2026-07": 2}}
 }

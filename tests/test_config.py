@@ -185,3 +185,46 @@ class ShellOutputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DispatcherModeTests(unittest.TestCase):
+    """`bin/catnip config` must not eat the mode flag the caller asked for.
+
+    The dispatcher hardcoded `--show`, which is one of an argparse
+    mutually-exclusive group, so `catnip config --json` errored out every
+    single time — while being documented as the way an agent finds the
+    store path. The command existed, dispatched, and could never work.
+
+    test_report.py's DispatcherTests catches "advertised but no case arm";
+    this catches "arm exists but mangles the arguments", which is the same
+    defect one layer down.
+    """
+
+    def _run(self, *args, conf=None):
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        return subprocess.run(
+            [str(root / "bin" / "catnip"), "config", *args],
+            capture_output=True, text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(conf.parent),
+                 "CATNIP_CONFIG": str(conf)})
+
+    def test_every_mode_flag_survives_the_dispatcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "catnip.conf"
+            conf.write_text(f"CATNIP_OWNER=x\nCATNIP_DATA_DIR={tmp}\n", encoding="utf-8")
+
+            out = self._run("--json", conf=conf)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            paths = json.loads(out.stdout)["paths"]
+            for key in ("history_file", "runs_dir"):
+                self.assertIn(key, paths)
+
+            out = self._run("--shell", conf=conf)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertIn("CATNIP_OWNER=", out.stdout)
+
+            # No mode named: the human summary is still the default.
+            out = self._run(conf=conf)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertIn("owner", out.stdout)

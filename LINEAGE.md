@@ -13,7 +13,8 @@ file records where each part came from, and what changed on the way out.
 | ~2026-07-16 | The 14-day problem is met in production: fetch dirs pruned before ingest lose traffic days permanently. `ingest-history.py` and the max-merge rule are written in response |
 | 2026-07-17 | The stats warm-up split (fire `stats/*` up front, collect in a final pass) replaces ~118 minutes of per-endpoint retry-sleep per run |
 | 2026-08-04 | The drawing layer becomes [pane](https://github.com/TGPSKI/pane), its own public repository and canonical upstream |
-| 2026-08-05 | **catnip**: the analytics pipeline becomes public and configurable — any GitHub user, any account, on a timer |
+| 2026-08-05 | The pipeline is generalized: configuration, repo selection, owner auto-detection, scheduling, retention with a data-loss guard |
+| 2026-08-06 | **catnip 0.2.0** goes public — views rebuilt on the durable store, `catnip report`, the agent skills |
 
 ## What was inherited
 

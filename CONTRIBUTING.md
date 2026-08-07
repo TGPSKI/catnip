@@ -16,11 +16,14 @@ dev-time tool (`pip install ruff`) and must never become an import.
 | Command | What it does |
 |---|---|
 | `make check` | Byte-compile, run all tests, `bash -n` both shell entry points. This is what CI gates on. |
+| `make quick` | Everything except the pty smoke, ~4s instead of ~45s. Iterate on this, gate on `check`. |
 | `make test` | unittest discovery with verbose output |
 | `make lint` | `ruff check .` — the per-file ignores in `ruff.toml` are deliberate |
 | `make smoke` | Drive the real curses TUI in a pty at 60x16, 120x40, 200x50 |
 | `make vendor-check` | Prove `src/catnip/tui/` is byte-identical to a pane checkout (`PANE=../pane`) |
 | `make doctor` | Run catnip's health checks against your own account |
+| `make install` | Symlink `bin/catnip` into a user bin dir already on PATH |
+| `make link-agents` | Symlink `.agents/skills/*` into `.claude`, `.cursor`, `.opencode` |
 
 Every test is offline. `tests/fixtures.py` writes the same file layout
 `fetch.sh` produces, so the analyze/history/totals code under test is the

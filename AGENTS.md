@@ -22,6 +22,7 @@ Consequences you must preserve:
 | Traffic merges are element-wise **max**, never sum | GitHub revises recent days upward as its pipeline settles |
 | The timer is `Persistent=true` | A machine asleep at the scheduled time must run on wake |
 | Derived views read `stats/history/`, never the rolling totals | The rolling window loses its left edge nightly; differencing two snapshots of it reports "what aged out" as "what changed" |
+| Anything from a rolling endpoint gets ingested, not just traffic | `/traffic/popular/*` rolls exactly like `/traffic/clones`. Paths lived only in runs until schema 3, so `prune` destroyed them and the ingest guard — which only knows traffic days — did not object |
 
 If a change makes any of those five statements false, it is wrong even if
 the tests pass.
