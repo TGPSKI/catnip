@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 
 def main():
@@ -21,12 +22,12 @@ def main():
     dates = sys.argv[1].split()
     for d in dates:
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
-            sys.exit("store-sweep.py: dates must be YYYY-MM-DD, got %r" % d)
+            sys.exit(f"store-sweep.py: dates must be YYYY-MM-DD, got {d!r}")
 
     cfg = json.loads(subprocess.check_output(
         ["catnip", "config", "--json"], text=True))
-    store_path = "%s/stats/history/traffic_daily.json" % cfg["paths"]["data_dir"]
-    repos = json.load(open(store_path))["repos"]
+    store_path = Path(cfg["paths"]["data_dir"]) / "stats/history/traffic_daily.json"
+    repos = json.loads(store_path.read_text())["repos"]
 
     for date in dates:
         rows = []
@@ -36,9 +37,9 @@ def main():
             if c or v:
                 rows.append((c + v, name, c, cu, v, vu))
         rows.sort(reverse=True)
-        print("%s: %d of %d repos moved" % (date, len(rows), len(repos)))
+        print(f"{date}: {len(rows)} of {len(repos)} repos moved")
         for _, name, c, cu, v, vu in rows:
-            print("  %-40s clones %d/%d  views %d/%d" % (name, c, cu, v, vu))
+            print(f"  {name:<40} clones {c}/{cu}  views {v}/{vu}")
         if not rows:
             print("  none")
 

@@ -33,30 +33,28 @@ def main():
         fail("usage: prowl-edit-publish.py <document>")
     doc = sys.argv[1]
     if not doc.startswith("# prowl"):
-        fail("document must start with the '# prowl' header, got %r"
-             % doc[:40])
+        fail(f"document must start with the '# prowl' header, got {doc[:40]!r}")
 
     m = COUNTS_RE.search(doc)
     if not m:
         fail("document carries no counts comment - the assembler stamps it "
              "and the editor keeps it verbatim")
-    stamped = dict(zip(TIERS, (int(x) for x in m.groups())))
+    stamped = dict(zip(TIERS, (int(x) for x in m.groups()), strict=False))
 
-    composed = {t: len(re.findall(r"^### .*`%s`" % t, doc, re.M))
+    composed = {t: len(re.findall(rf"^### .*`{t}`", doc, re.M))
                 for t in TIERS}
     if composed != stamped:
         fail("tier counts differ from the document's own stamp - composed "
-             "%s vs stamped %s. The editor arranges; it does not drop or "
-             "invent findings" % (composed, stamped))
+             f"{composed} vs stamped {stamped}. The editor arranges; it does not drop or "
+             "invent findings")
 
     cycle_state = Path(".state/prowl-cycle.json")
     if not cycle_state.exists():
         fail("no .state/prowl-cycle.json - nothing recorded this cycle")
     recorded = json.loads(cycle_state.read_text())["findings"]
     if stamped != recorded:
-        print("superseded - the cycle advanced to %s after this document "
-              "was assembled at %s; a fresher edit is queued" % (
-                  recorded, stamped))
+        print(f"superseded - the cycle advanced to {recorded} after this document "
+              f"was assembled at {stamped}; a fresher edit is queued")
         return
 
     cfg = json.loads(subprocess.check_output(
@@ -68,9 +66,9 @@ def main():
     body = COUNTS_RE.sub("", doc).rstrip() + "\n"
     out.write_text(body)
 
-    print("wrote %s" % out)
+    print(f"wrote {out}")
     for t in TIERS:
-        print("  %-12s %d" % (t, composed[t]))
+        print(f"  {t:<12} {composed[t]}")
 
 
 if __name__ == "__main__":

@@ -45,20 +45,20 @@ def main():
         fail("usage: prowl-dispatch.py <cycle> <window> <seeds>")
     cycle, window, text = sys.argv[1], sys.argv[2], sys.argv[3]
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cycle):
-        fail("cycle must be YYYY-MM-DD, got %r" % cycle)
+        fail(f"cycle must be YYYY-MM-DD, got {cycle!r}")
 
     parsed = []
     for s in seeds(text):
         missing = [k for k in ("angle", "brief") if not s.get(k)]
         if missing:
-            fail("SEED %r is missing %s" % (
+            fail("SEED {!r} is missing {}".format(
                 s.get("angle", "?")[:60], ", ".join(missing)))
         parsed.append(s)
     if not parsed:
         fail("no SEED blocks - the meta-analysis dispatched nothing")
 
     for s in parsed:
-        body = "CYCLE: %s\nWINDOW: %s\nANGLE: %s\n\n%s\n" % (
+        body = "CYCLE: {}\nWINDOW: {}\nANGLE: {}\n\n{}\n".format(
             cycle, window, s["angle"], s["brief"])
         req = urllib.request.Request(
             INTAKE, data=body.encode(), method="POST")
@@ -66,10 +66,10 @@ def main():
             with urllib.request.urlopen(req, timeout=10) as resp:
                 resp.read()
         except Exception as e:
-            fail("intake refused seed %r: %s" % (s["angle"][:60], e))
-        print("  seeded       %s" % s["angle"][:64])
+            fail("intake refused seed {!r}: {}".format(s["angle"][:60], e))
+        print("  seeded       {}".format(s["angle"][:64]))
 
-    print("dispatched %d brief(s)" % len(parsed))
+    print(f"dispatched {len(parsed)} brief(s)")
 
 
 if __name__ == "__main__":

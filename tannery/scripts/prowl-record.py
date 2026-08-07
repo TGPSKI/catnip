@@ -70,7 +70,7 @@ def main():
         fail("usage: prowl-record.py <cycle> <analysis>")
     cycle, analysis = sys.argv[1], sys.argv[2]
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cycle):
-        fail("cycle must be YYYY-MM-DD, got %r" % cycle)
+        fail(f"cycle must be YYYY-MM-DD, got {cycle!r}")
 
     window = ""
     m = re.search(r"^WINDOW:[ \t]*(.+)$", analysis, re.M)
@@ -82,24 +82,24 @@ def main():
         label = f.get("claim") or f.get("hypothesis") or f.get("item") or "?"
         missing = [k for k in REQUIRED[kind] if not f.get(k)]
         if missing:
-            fail("%s %r is missing %s" % (kind, label[:60], ", ".join(missing)))
+            fail("{} {!r} is missing {}".format(kind, label[:60], ", ".join(missing)))
         if kind == "FINDING":
             if not (f.get("body") or f.get("test")):
-                fail("FINDING %r has neither body nor test - nothing carries "
-                     "its substance" % label[:60])
+                fail(f"FINDING {label[:60]!r} has neither body nor test - nothing carries "
+                     "its substance")
             if f["tier"] not in TIERS:
-                fail("FINDING %r has tier %r, not one of %s" % (
+                fail("FINDING {!r} has tier {!r}, not one of {}".format(
                     label[:60], f["tier"], "|".join(TIERS)))
             if f["tier"] == "inferred" and not f.get("test"):
-                fail("inferred FINDING %r states no test - an inferred claim "
-                     "is a tested hypothesis" % label[:60])
+                fail(f"inferred FINDING {label[:60]!r} states no test - an inferred claim "
+                     "is a tested hypothesis")
             if f["tier"] == "speculative" and not f.get("would_confirm"):
-                fail("speculative FINDING %r states nothing that would "
-                     "confirm or kill it" % label[:60])
+                fail(f"speculative FINDING {label[:60]!r} states nothing that would "
+                     "confirm or kill it")
         if kind in ("FINDING", "CORRECTION") and \
                 not EVIDENCE_RE.match(f["evidence"]):
-            fail("%s %r evidence does not open with the catnip tool it "
-                 "rests on: %r" % (kind, label[:60], f["evidence"][:80]))
+            fail("{} {!r} evidence does not open with the catnip tool it "
+                 "rests on: {!r}".format(kind, label[:60], f["evidence"][:80]))
         parsed[kind].append(f)
 
     if not any(parsed.values()):
@@ -118,45 +118,45 @@ def main():
             "checked_with": c["evidence"].split()[0],
             "why_not": c["body"],
         })
-        print("  reclassified correction -> refuted: %s" % c["claim"][:50])
+        print("  reclassified correction -> refuted: {}".format(c["claim"][:50]))
 
     prowl = Path(".state/prowl")
     prowl.mkdir(parents=True, exist_ok=True)
     if window:
-        (prowl / ("%s.window" % cycle)).write_text(window + "\n")
+        (prowl / (f"{cycle}.window")).write_text(window + "\n")
 
-    with open(prowl / ("%s.md" % cycle), "a") as fh:
+    with open(prowl / (f"{cycle}.md"), "a") as fh:
         for f in parsed["FINDING"]:
-            fh.write("### %s  `%s`\n\n" % (f["claim"], f["tier"]))
+            fh.write("### {}  `{}`\n\n".format(f["claim"], f["tier"]))
             if f.get("body"):
-                fh.write("%s\n\n" % f["body"])
+                fh.write("{}\n\n".format(f["body"]))
             for key, label in (("test", "Test"), ("read", "Read"),
                                ("would_confirm", "Would confirm further"),
                                ("refutes", "Refutes")):
                 if f.get(key):
-                    fh.write("**%s:** %s\n\n" % (label, f[key]))
-            fh.write("**Evidence:** %s\n\n" % f["evidence"])
-            print("  filed %-12s %s" % (f["tier"], f["claim"][:64]))
+                    fh.write(f"**{label}:** {f[key]}\n\n")
+            fh.write("**Evidence:** {}\n\n".format(f["evidence"]))
+            print(f"  filed {f['tier']:<12} {f['claim'][:64]}")
 
     if parsed["REFUTED"]:
-        with open(prowl / ("%s.refuted.md" % cycle), "a") as fh:
+        with open(prowl / (f"{cycle}.refuted.md"), "a") as fh:
             for r in parsed["REFUTED"]:
-                fh.write("- %s - checked with %s; did not hold: %s\n" % (
+                fh.write("- {} - checked with {}; did not hold: {}\n".format(
                     oneline(r["hypothesis"]), oneline(r["checked_with"]),
                     oneline(r["why_not"])))
-                print("  refuted      %s" % r["hypothesis"][:64])
+                print("  refuted      {}".format(r["hypothesis"][:64]))
 
     if parsed["WATCH"]:
-        with open(prowl / ("%s.watch.md" % cycle), "a") as fh:
+        with open(prowl / (f"{cycle}.watch.md"), "a") as fh:
             for w in parsed["WATCH"]:
-                fh.write("- **%s** - %s\n" % (
+                fh.write("- **{}** - {}\n".format(
                     oneline(w["item"]), oneline(w["body"])))
-                print("  watch        %s" % w["item"][:64])
+                print("  watch        {}".format(w["item"][:64]))
 
-    print("filed %d finding(s), %d refutation(s), %d watch item(s)" % tuple(
-        len(parsed[k]) for k in ("FINDING", "REFUTED", "WATCH")))
+    print("filed {} finding(s), {} refutation(s), {} watch item(s)".format(
+        *(len(parsed[k]) for k in ("FINDING", "REFUTED", "WATCH"))))
     # Line-anchored for the extract rules, like the counts below.
-    print("cycle %s" % cycle)
+    print(f"cycle {cycle}")
     sys.stdout.flush()
     # prowl-publish.sh owns assembly and prints the authoritative counts.
     rc = subprocess.call(["./scripts/prowl-publish.sh", cycle])
@@ -166,7 +166,7 @@ def main():
     # The assembled document goes to the editor before anything reaches the
     # published prowl.md - the guarded edit-publish is the only writer there.
     import urllib.request
-    assembled = (prowl / ("%s.assembled.md" % cycle)).read_text()
+    assembled = (prowl / (f"{cycle}.assembled.md")).read_text()
     req = urllib.request.Request(
         "http://127.0.0.1:7751/intake"
         "?kind=prowl.assembled&source=prowl-record&queue=editor-in",
@@ -175,7 +175,7 @@ def main():
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
     except Exception as e:
-        fail("recorded and assembled, but the editor handoff failed: %s" % e)
+        fail(f"recorded and assembled, but the editor handoff failed: {e}")
     print("handed to editor")
 
 

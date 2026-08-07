@@ -36,6 +36,14 @@ Close the turn with the composed document and nothing else.
 
 ---
 toolsets: [catnip-edit-publish]
-Call catnip-prowl-edit-publish once, with the document you composed as the
-document argument, unchanged. Close the turn by repeating the tool's
-"wrote ..." or "superseded ..." line.
+Call catnip-prowl-edit-publish with the document you composed as the
+document argument, unchanged.
+
+If it refuses for tier counts, recompose with every stamped finding present
+as its own heading and call it once more. If it refuses again, close the
+turn with the tool's error line verbatim. Never write a "wrote" line the
+tool did not return - a wrote line of your own is a fabrication, and the
+cycle silently dies on it.
+
+Close the turn by repeating the tool's actual closing line: "wrote ...",
+"superseded ...", or its error.
