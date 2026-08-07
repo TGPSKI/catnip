@@ -24,7 +24,11 @@ from catnip.config import (  # noqa: E402
 class ParseTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
+        # Resolved, because `Config` resolves every path it returns and on
+        # macOS /var is a symlink to /private/var — so an unresolved tmpdir
+        # compares unequal to the identical directory and the path
+        # assertions fail there and nowhere else.
+        self.root = Path(self._tmp.name).resolve()
 
     def tearDown(self):
         self._tmp.cleanup()
