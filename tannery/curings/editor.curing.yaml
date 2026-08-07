@@ -1,0 +1,9 @@
+name: editor
+description: Edit the assembled cycle into one authored document, guarded.
+agent: catnip-prowl-editor
+queue: editor-in
+# The whole assembled document must reach the editor in one page - a
+# truncated input loses the trailing counts stamp and the guard refuses it.
+page_size_bytes: 24000
+max_attempts: 2
+timeout_seconds: 900

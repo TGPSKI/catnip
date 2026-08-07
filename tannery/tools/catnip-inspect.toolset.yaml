@@ -1,0 +1,4 @@
+name: catnip-inspect
+tools:
+  - catnip-verify
+  - read_state

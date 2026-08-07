@@ -1,0 +1,3 @@
+servers:
+  - name: shells
+    command: shell-mcp /home/tyler/git/TGPSKI/catnip/tannery/shell-tools.json

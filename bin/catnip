@@ -7,6 +7,25 @@
 # about which account and which data directory are in play.
 set -euo pipefail
 
+# Everything below lives inside main(), called on the last line, because bash
+# reads a script INCREMENTALLY rather than slurping it. `catnip run` is a
+# 40-minute job, and rewriting this file in place while one is in flight —
+# a `git pull`, an editor save — moves the bytes under bash's stored offset.
+#
+# Measured, not assumed. With an in-place rewrite mid-run, an unwrapped
+# script loses the rest of its body: execution dies at the corruption and
+# the remaining work never happens. Wrapped, bash must parse the whole
+# function before it can execute the call, so the body always completes.
+#
+# It is not a total fix and nothing is: bash may still read garbage after
+# main() returns and exit non-zero having done all the work correctly. An
+# `exit` after the call does not help, because the corrupted bytes can
+# precede it. Treat a trailing syntax error from a run that otherwise
+# reported success as this, and check the store rather than the exit code.
+#
+# Editors that write-then-rename (sed -i, vim's default) are safe: the
+# running shell keeps the original inode.
+main() {
 HERE="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
 ROOT="$(cd -- "$HERE/.." && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
@@ -99,6 +118,13 @@ case "$cmd" in
 
   view)
     view="${1:-traffic}"; [[ $# -gt 0 ]] && shift || true
+    # `catnip view why <name>` reads naturally and is what the docs and the
+    # prowl skill both use, so accept it here rather than making callers
+    # spell out --why-view.
+    if [[ "$view" == "why" && $# -gt 0 && "$1" != -* ]]; then
+      why="$1"; shift
+      exec "$PYTHON" -m catnip.ui --text --view why --why-view "$why" "$@"
+    fi
     exec "$PYTHON" -m catnip.ui --text --view "$view" "$@" ;;
 
   runs)
@@ -178,3 +204,6 @@ PY
     usage >&2
     exit 2 ;;
 esac
+}
+
+main "$@"

@@ -1,0 +1,4 @@
+name: catnip-report-write
+tools:
+  - catnip-report-write
+  - catnip-report-meta

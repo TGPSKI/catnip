@@ -1,0 +1,3 @@
+# Runtime state: run logs, scheduler lock, per-cycle prowl scratch, and the
+# devtools auth token - which must never be committed.
+.state/

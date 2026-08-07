@@ -1,0 +1,243 @@
+{
+  "tools": [
+    {
+      "name": "catnip_run",
+      "description": "Run the full catnip pipeline: fetch -> analyze -> history -> totals -> verify. Measured at 41 minutes for 111 repos; the fetch is serial so it grows with the account.",
+      "command": "catnip",
+      "args": [
+        "run",
+        "--quiet"
+      ],
+      "timeout_seconds": 5400,
+      "output_cap_bytes": 8000
+    },
+    {
+      "name": "catnip_verify",
+      "description": "Assert every analysis CSV the TUI requires exists and is non-empty. Exits non-zero if any is missing.",
+      "command": "catnip",
+      "args": [
+        "verify"
+      ],
+      "timeout_seconds": 120,
+      "output_cap_bytes": 4000
+    },
+    {
+      "name": "catnip_store_status",
+      "description": "Print the durable store's schema version, owner, newest day, coverage ranges and repo count as JSON. This is the authority on whether a run actually refreshed the data.",
+      "command": "bash",
+      "args": [
+        "-c",
+        "catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['history_file'])\" | xargs -r python3 -c \"import json,sys;d=json.load(open(sys.argv[1]));days=sorted({x for r in d.get('repos',{}).values() for m in ('clones','views') for x in (r.get(m) or {})});print(json.dumps({'schema_version':d.get('schema_version'),'owner':d.get('owner'),'updated':d.get('updated'),'latest_day':days[-1] if days else None,'coverage':d.get('coverage'),'repos':len(d.get('repos',{})),'paths_repos':len(d.get('paths',{}))}))\""
+      ],
+      "timeout_seconds": 60,
+      "output_cap_bytes": 4000
+    },
+    {
+      "name": "catnip_report_write",
+      "description": "Write the deterministic markdown report for the durable store. Refuses and exits non-zero when the store's newest day has not advanced since the last report - that refusal is a correct outcome, not a failure.",
+      "command": "catnip",
+      "args": [
+        "report"
+      ],
+      "timeout_seconds": 300,
+      "output_cap_bytes": 4000
+    },
+    {
+      "name": "catnip_report_read",
+      "description": "Print the deterministic report to stdout without writing it. Never gated by the interval guard. This is the measured floor every prowl finding must rest on.",
+      "command": "catnip",
+      "args": [
+        "report",
+        "--stdout"
+      ],
+      "timeout_seconds": 300,
+      "output_cap_bytes": 60000
+    },
+    {
+      "name": "catnip_report_meta",
+      "description": "Print the newest written report's meta.json (latest_day, written, provenance) - the authority on whether a report exists for the current store.",
+      "command": "bash",
+      "args": [
+        "-c",
+        "d=$(catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['data_dir'])\")/reports; ls -1d \"$d\"/*/ 2>/dev/null | sort | tail -1 | xargs -r -I{} cat {}meta.json 2>/dev/null || echo none"
+      ],
+      "timeout_seconds": 60,
+      "output_cap_bytes": 2000
+    },
+    {
+      "name": "catnip_view",
+      "description": "Print one derived view as text. Every number is computed by catnip.derive from the durable store, so anything it returns is measured.",
+      "command": "catnip",
+      "args": [
+        "view",
+        "{{view}}"
+      ],
+      "required": [
+        "view"
+      ],
+      "patterns": {
+        "view": "^(traffic|audience|table|lang|attribution|deltas|anomaly|profile|correlation|funnel)$"
+      },
+      "timeout_seconds": 180,
+      "output_cap_bytes": 20000
+    },
+    {
+      "name": "catnip_derivation",
+      "description": "Print the formula, thresholds and inputs behind one view - the same text the TUI's [?] overlay shows. Use it before asserting what a number means.",
+      "command": "catnip",
+      "args": [
+        "view",
+        "why",
+        "{{view}}"
+      ],
+      "required": [
+        "view"
+      ],
+      "patterns": {
+        "view": "^(traffic|audience|table|lang|attribution|deltas|anomaly|profile|correlation|funnel)$"
+      },
+      "timeout_seconds": 60,
+      "output_cap_bytes": 8000
+    },
+    {
+      "name": "catnip_store_series",
+      "description": "Print one repo's daily clones and views from the durable store as JSON, for testing a hypothesis against the raw series rather than against a rendered view.",
+      "command": "bash",
+      "args": [
+        "-c",
+        "h=$(catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['history_file'])\"); python3 -c \"import json,sys;d=json.load(open(sys.argv[1]));r=(d.get('repos') or {}).get(sys.argv[2]);print(json.dumps(r if r else {'error':'no such repo in store','known':sorted(d.get('repos',{}))[:40]}))\" \"$h\" \"$1\"",
+        "--",
+        "{{repo}}"
+      ],
+      "required": [
+        "repo"
+      ],
+      "patterns": {
+        "repo": "^[A-Za-z0-9._-]{1,100}$"
+      },
+      "timeout_seconds": 60,
+      "output_cap_bytes": 20000
+    },
+    {
+      "name": "catnip_prowl_edit_publish",
+      "description": "Replace the published prowl.md with the editor's document. Refuses a document whose measured/inferred/speculative counts differ from the cycle's recorded truth - the editor arranges, merges and cuts; it cannot drop or invent findings.",
+      "command": "python3",
+      "args": [
+        "scripts/prowl-edit-publish.py",
+        "{{document}}"
+      ],
+      "required": [
+        "document"
+      ],
+      "timeout_seconds": 30,
+      "output_cap_bytes": 2000
+    },
+    {
+      "name": "catnip_prowl_dispatch",
+      "description": "Dispatch EVERY SEED block in a meta-analysis as one investigation brief on the analyst queue. Takes the seeds verbatim; parsing is deterministic and happens here, so the number of briefs dispatched never depends on a model counting them. Rejects a seed missing its angle or brief, and a meta-analysis with no SEED blocks.",
+      "command": "python3",
+      "args": [
+        "scripts/prowl-dispatch.py",
+        "{{cycle}}",
+        "{{window}}",
+        "{{seeds}}"
+      ],
+      "required": [
+        "cycle",
+        "window",
+        "seeds"
+      ],
+      "patterns": {
+        "cycle": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      },
+      "timeout_seconds": 60,
+      "output_cap_bytes": 4000
+    },
+    {
+      "name": "catnip_store_sweep",
+      "description": "Print every repo with traffic on the given day(s), from the durable store - including repos the windowed views withheld as too quiet to classify. One or more YYYY-MM-DD dates, space-separated. This is the tool for account-wide crawl patterns that no per-repo view can see.",
+      "command": "python3",
+      "args": [
+        "scripts/store-sweep.py",
+        "{{dates}}"
+      ],
+      "required": [
+        "dates"
+      ],
+      "patterns": {
+        "dates": "^[0-9]{4}-[0-9]{2}-[0-9]{2}( [0-9]{4}-[0-9]{2}-[0-9]{2}){0,6}$"
+      },
+      "timeout_seconds": 60,
+      "output_cap_bytes": 20000
+    },
+    {
+      "name": "catnip_prowl_previous",
+      "description": "Print the currently-published prowl.md - the previous cycle's claims, to test against the store as it stands now. Prints 'none' when no prowl has been published yet.",
+      "command": "bash",
+      "args": [
+        "-c",
+        "d=$(catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['data_dir'])\"); latest=$(ls -1d \"$d\"/reports/*/ 2>/dev/null | sort | tail -1); cat \"${latest}prowl.md\" 2>/dev/null || echo none"
+      ],
+      "required": [],
+      "timeout_seconds": 30,
+      "output_cap_bytes": 20000
+    },
+    {
+      "name": "catnip_prowl_record",
+      "description": "File EVERY block in one prowl analysis - findings, corrections, refutations, watch items - then publish the cycle's prowl.md beside report.md. Takes the analysis verbatim; parsing the blocks is deterministic and happens here, so the number of blocks recorded never depends on a model counting them. Rejects a tier outside measured|inferred|speculative, evidence that does not open with the catnip tool it rests on, an inferred finding with no test, a speculative one with nothing that would confirm it, and an analysis with no FINDING blocks.",
+      "command": "python3",
+      "args": [
+        "scripts/prowl-record.py",
+        "{{cycle}}",
+        "{{analysis}}"
+      ],
+      "required": [
+        "cycle",
+        "analysis"
+      ],
+      "patterns": {
+        "cycle": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      },
+      "timeout_seconds": 60,
+      "output_cap_bytes": 4000
+    },
+    {
+      "name": "write_state",
+      "description": "Write content to a .state/ file path",
+      "command": "bash",
+      "args": [
+        "-c",
+        "mkdir -p \"$(dirname \"$1\")\" && printf '%s' \"$2\" > \"$1\" && echo 'state saved'",
+        "--",
+        "{{path}}",
+        "{{content}}"
+      ],
+      "required": [
+        "path",
+        "content"
+      ],
+      "patterns": {
+        "path": "^\\.state/[A-Za-z0-9._-]+$"
+      },
+      "output_cap_bytes": 200
+    },
+    {
+      "name": "read_state",
+      "description": "Read a value from a .state/ file. Prints 'none' and succeeds when the file does not exist, which is the normal first cycle.",
+      "command": "bash",
+      "args": [
+        "-c",
+        "cat -- \"$1\" 2>/dev/null || echo none",
+        "--",
+        "{{path}}"
+      ],
+      "required": [
+        "path"
+      ],
+      "patterns": {
+        "path": "^\\.state/[A-Za-z0-9._-]+$"
+      },
+      "output_cap_bytes": 4000
+    }
+  ]
+}

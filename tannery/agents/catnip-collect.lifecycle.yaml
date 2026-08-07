@@ -1,0 +1,14 @@
+agent: catnip-collect
+schedule: "7 5 * * *"
+timeout: 6600s
+tool_timeout: 6000s
+tool_rounds: 12
+
+output:
+  - type: file
+    path: .state/artifacts/{{.date}}-catnip-collect.txt
+  # Collect's delivery is what triggers the report - no second cron guessing
+  # when the fetch will finish. Intake stores the status block as a hide and
+  # enqueues it on report-in; the report curing does the rest.
+  - type: http
+    url: http://127.0.0.1:7751/intake?kind=collect.result&source=catnip-collect&queue=report-in

@@ -5,6 +5,157 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-07
+
+### Added
+
+- **An editor stands between assembly and the published prowl.md.** Analyst
+  packages accumulate into a staged assembly; each recorded package hands
+  the assembly to an editor that merges same-phenomenon blocks, orders the
+  document to argue account-wide first, and cuts restatements. Its publish
+  is the only writer of `prowl.md` and is guarded twice: a document whose
+  tier counts differ from its own stamped counts is refused (the editor
+  arranges, it does not drop or invent findings), and one whose stamp
+  trails the cycle's record is skipped as superseded — a fresher edit is
+  already queued behind it.
+- **Self-graded analysis depth.** A meta-analyst reads the deterministic
+  report every third day, judges how much investigation the cycle deserves,
+  and seeds N analyst briefs — one per distinct phenomenon, N being its
+  call. Each brief runs as its own analyst; packages fan back in through the
+  writer, whose per-cycle files accumulate and whose publish dedupes, so
+  collation needs no join queue and a failed angle costs only itself. The
+  dispatch and recording ends are both single deterministic calls that parse
+  blocks themselves — no model ever counts its own fan-out.
+
+### Changed
+
+- **The served chain is event-driven; only the fetch and the analysis are on
+  cron.** 0.2.1 scheduled the report at 06:52 and sized the gap so a
+  41-minute collect would probably have finished — clock arithmetic standing
+  in for a dependency. The report now runs from a curing fed by collect's
+  output, and the prowl writer from a curing fed by the analysis, so a slow
+  fetch delays the report instead of losing it. Routing is one fact per
+  stage: the producer's intake URL and the consuming curing name the same
+  queue. The `leather ingest` targets remain for one-shot testing and agent
+  validation; the served chain never uses them.
+
+- **The prowl analysis is recorded by one deterministic call.** The 0.2.1
+  writer made one tool call per FINDING/REFUTED block, which put a
+  data-dependent number of calls on the model: three calls against four
+  findings drops one silently — no error, just a shorter report.
+  `catnip-prowl-record` replaces `catnip_prowl_finding`, `catnip_prowl_refuted`
+  and `catnip_prowl_publish`: it takes the whole analysis, parses the blocks
+  itself, files them all or fails naming the block it refused, and publishes.
+  Validation is unchanged — tier enum, evidence opening with the catnip tool
+  the claim rests on, publish refusing an empty cycle.
+- **Every measured value in a state file is now carried by an extract rule.**
+  Coverage, repo count, schema version, the report's meta fields and the
+  recorder's counts reach their recording turns as `{{...}}` verbatim instead
+  of as a model's transcription — 0.2.1 wrote a Python repr of the coverage
+  ranges where the store's own JSON belonged. The model writes only judgment:
+  `action`, `reason`, a finding's prose.
+- **`catnip-report`'s verdict rules moved into the turn that owns the
+  writer.** The agent frontmatter is the system prompt and is resent every
+  turn, so rules about `catnip-report-write` fired on turns that could not
+  reach the tool. Output rules now live with the tools that produce them.
+- **`tannery/README.md` rewritten** for someone deciding whether to run this,
+  in the shape of leather's example READMEs.
+
+### Fixed
+
+- **The prowl writer dead-lettered every scheduled cycle.** The 0.2.1
+  lifecycle routed the analysis with `output: type: queue`, which builds a
+  queue item with no hide behind it; the curing loads the item's hide
+  unconditionally and failed each attempt. The route is now `type: http` to
+  leather's `/intake`, which stores the hide first and enqueues against it.
+  This tannery had never successfully recorded a prowl analysis until now.
+
+## [0.2.1] - 2026-08-07
+
+### Added
+
+- **`tannery/` — a leather tannery.** `catnip-collect` runs the fetch daily
+  at 05:07, `catnip-report` writes the deterministic report an hour and
+  forty-five minutes behind it, and `catnip-prowl` hunts every third day.
+  The gaps are headroom, not estimates: the fetch is serial and paginated so
+  its duration tracks repo count. Overrunning one is safe by construction —
+  the store has not advanced, the interval guard refuses, and the report
+  records `skipped` rather than describing yesterday as today.
+- **Per-turn tool scoping, which is the reason to use leather here at all.**
+  Each agent is multi-turn and a turn replaces its tool scope rather than
+  extending it, so an agent reaches only what its current turn declares:
+
+      catnip-collect   catnip-pipeline -> catnip-inspect -> catnip-record
+      catnip-report    catnip-inspect  -> catnip-report-write -> catnip-record
+      catnip-prowl     catnip-evidence -> catnip-file -> catnip-publish
+
+  `catnip-collect` cannot write state while the pipeline turn runs.
+  `catnip-report` cannot reach the writer before reading the store's newest
+  day. `catnip-prowl` cannot file during the turn it gathers evidence and
+  cannot gather more once filing starts, so everything it files came from
+  evidence already in context. That replaced a paragraph asking the agent to
+  test before filing: there is now no turn in which it can do otherwise.
+- **Provenance as argument validation.** `catnip_prowl_finding` rejects any
+  `tier` outside `measured|inferred|speculative` and any `evidence` that does
+  not name the catnip tool the claim rests on. No path through the toolset
+  records an untagged or unsourced claim. Refutations have their own tool,
+  because a cycle with none tested nothing, and publishing fails on an empty
+  cycle rather than writing an empty file.
+- **`make smoke-tools`** execs every read-only tool's real argv straight from
+  `shell-tools.json`, so an argv or quoting regression surfaces before the
+  scheduler hits it at 05:07 with nobody watching. It is what caught
+  `catnip view why`.
+- **`--why-view`**, and `catnip view why <view>` in the dispatcher.
+
+### Changed
+
+- **Funnel `views`/`uniq` renamed to `pgviews`/`pguniq`.** They sum GitHub's
+  top ten paths and are not repo traffic, but wore names every other view
+  uses for something else. One repo read 10/10 where its real figures were 19
+  views from 1 unique visitor: `pguniq` counted one person once per page, and
+  `pgviews` caught ten of nineteen because ten paths is all the API returns.
+  Re-sourcing them from the store would have been worse — the store's window
+  and the paths snapshot genuinely disagree, so real windowed traffic beside
+  path-derived depth trades a naming problem for an arithmetic one.
+- **`bin/catnip` runs inside `main()`.** bash reads a script incrementally,
+  and `catnip run` is a 41-minute job; rewriting the file in place mid-run
+  moves the bytes under bash's stored offset. Measured: an unwrapped script
+  loses the rest of its body, a wrapped one always completes. Not a total
+  fix — bash may still read garbage after `main` returns and exit non-zero
+  having done all the work. Treat a trailing syntax error from a run that
+  otherwise reported success as this, and check the store, not the exit code.
+
+### Fixed
+
+- **Tannery timeouts are sized from a measurement instead of the first
+  draft's guess.** The draft of this release bounded `catnip_run` at 2100
+  seconds without measuring anything; a real run took 2459. Shipped as
+  drafted, shell-mcp would have SIGKILLed the pipeline 35 minutes into its
+  first scheduled cycle and the agent would have reported a timeout. Now
+  5400s/6000s/6600s, innermost-first, roughly twice the measurement. The
+  same draft told the agent to expect "10–20 minutes", which would have made
+  a normal 41-minute run read as anomalous; the prompt now states the
+  measured duration.
+- **`catnip view why <view>` had never worked.** It took the view name from
+  `--timeframe`, which argparse restricts to `1d/1w/2w/all/epoch`, so the
+  name was rejected and a bare `view why` asked derive for the derivation of
+  `"2w"`. It is how both the README and the `catnip-prowl` skill say to read
+  a derivation from a shell — the third instance of the same defect after
+  `catnip report` shipping undispatched and `catnip config --json` colliding
+  with its own mutually-exclusive group.
+- **Printing a derivation no longer requires a populated store.** A
+  derivation is documentation, not data; it rode the same path as the views
+  and so failed on a fresh install — exactly when someone asks what a number
+  will mean before collecting any.
+- **`attribution()` returned different keys depending on whether the window
+  was empty**, and the view read the missing one unconditionally, so an empty
+  window raised `KeyError` mid-render inside curses. The test asserts the two
+  returns carry identical key sets rather than the one key that was missing.
+- **Config tests compared a resolved path to an unresolved tmpdir**, which
+  fails only on macOS, where `/var` is a symlink to `/private/var`. Caught by
+  the cross-platform matrix, which runs on `main` and on any PR carrying the
+  `full-test` label.
+
 ## [0.2.0] - 2026-08-06
 
 ### Added

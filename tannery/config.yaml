@@ -1,0 +1,23 @@
+agent_dir: agents
+tool_dir: tools
+mcp_servers_file: mcp-servers.yaml
+state_dir: .state
+
+model: qwen36-35b-a3b-nvfp4
+llm_endpoint: http://127.0.0.1:8000
+
+api: true
+api_addr: 127.0.0.1:7751
+
+log_level: info
+llm_timeout: 300s
+max_tokens: 16384
+completion_reserve: 2048
+reasoning_reserve: 4096
+summarize_threshold: 0.85
+
+scheduler_tick: 1m
+max_concurrent_jobs: 2
+
+persist_runs: true
+persist_runs_detail: tools

@@ -1,0 +1,9 @@
+name: analyze
+description: Investigate one brief; the package fans back in through the writer.
+agent: catnip-prowl
+queue: prowl-analyze-in
+page_size_bytes: 8000
+max_attempts: 2
+timeout_seconds: 1800
+output:
+  queue: prowl-write-in

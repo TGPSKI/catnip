@@ -122,7 +122,7 @@ inputs, raw-vs-unique, withheld components.
 ### Headless
 
 `catnip view <name>` reads the same functions the screens do;
-`catnip view why --timeframe <view>` prints a derivation. The viewer runs with
+`catnip view why <view>` prints a derivation. The viewer runs with
 no run directory at all: `--store-only`, `--history-file`, `--stats-file`.
 
 That is the state `catnip prune` eventually leaves behind, and it is the one
@@ -202,6 +202,36 @@ User timer, not system — `gh` reads credentials from your keyring, which root
 doesn't have. The installer checks user lingering and prints the fix. No
 systemd: `catnip timer cron`. macOS/launchd and the silent-failure modes:
 [docs/automation.md](docs/automation.md).
+
+### Tannery
+
+A timer collects. [`tannery/`](tannery/) is the same schedule with agents on
+it - a [leather](https://github.com/TGPSKI/leather) tannery.
+
+```bash
+cd tannery
+make validate     # leather validate every agent, lifecycle and toolset
+make smoke-tools  # exec the read-only tools for real
+make serve        # run the scheduler
+```
+
+| agent | when | does |
+|---|---|---|
+| `catnip-collect` | daily 05:07 | `catnip run`, then checks it landed |
+| `catnip-report` | daily 06:52 | writes the deterministic report |
+| `catnip-prowl` | every 3rd day 08:22 | hunts what the report does not answer |
+
+Each agent is multi-turn and every turn replaces its tool scope, so an agent
+can only reach the tools that turn declares:
+
+```
+catnip-prowl   catnip-evidence -> catnip-file -> catnip-publish
+```
+
+It cannot file a finding during the turn it gathers evidence, and cannot
+gather more once it starts filing. "Test before you file" is not an
+instruction it is asked to follow - there is no turn in which it can do
+otherwise. See [tannery/README.md](tannery/README.md).
 
 ## Command reference
 
