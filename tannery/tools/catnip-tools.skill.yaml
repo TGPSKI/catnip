@@ -2,9 +2,20 @@ name: catnip-tools
 # {{key}} means a tool measured it; <> in a prompt means the model writes it.
 # Values reach subsequent turns only.
 extract:
+  # settled_day, not latest_day: latest_day is always the fetch's own day,
+  # which GitHub reports as a flat zero. Every window ends on the settled
+  # day, so every agent must name that one.
   - tool: catnip-store-status
-    pattern: '"latest_day":\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"'
-    store: latest_day
+    pattern: '"settled_day":\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"'
+    store: settled_day
+  # The tool decides staleness. A model comparing dates to "yesterday" is
+  # doing arithmetic nobody checks, and it got the answer it wanted twice.
+  - tool: catnip-store-status
+    pattern: '"settled_expected":\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"'
+    store: settled_expected
+  - tool: catnip-store-status
+    pattern: '"stale":\s*"(yes|no)"'
+    store: stale
   - tool: catnip-store-status
     pattern: '"coverage":\s*(\[.*?\]\])'
     store: coverage

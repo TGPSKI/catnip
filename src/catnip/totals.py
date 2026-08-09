@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from catnip import derive
 from catnip.config import Config, ConfigError
 from catnip.config import run_dirs as list_fetch_dirs
 
@@ -188,8 +189,16 @@ def main(argv=None):
         for date, val in metrics["views"].items():
             org_daily[date]["views"] += val[0]
 
+    # Both windows must end on a day GitHub has finished counting, or the
+    # current one carries the fetch day's zero and the day before it at a
+    # fraction while the prior one is complete — and every trend arrow reads
+    # as a decline that is really the shape of the collection.
+    settle_edge = derive.settled_edge(
+        max([*ingested, *(d.name for d in remaining)], default=None))
+
     def window_sum(metric, days, offset=0):
-        dates = sorted(org_daily)
+        dates = [d for d in sorted(org_daily)
+                 if settle_edge is None or d <= settle_edge]
         sel = dates[-(days + offset): len(dates) - offset if offset else None]
         return sum(org_daily[d][metric] for d in sel)
 

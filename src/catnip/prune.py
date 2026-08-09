@@ -7,6 +7,12 @@ history store. So this module refuses, by construction, to delete a run
 that has not been ingested: the guard is not a warning printed after the
 fact but a precondition on the delete itself.
 
+A second precondition: a run whose days GitHub may still be revising is
+kept even when it has been ingested. Being ingested means its numbers are
+in the store; it does not mean they were the final numbers. Deleting it
+discards the only record from which a revision could be re-derived or
+audited, and `history --rebuild` reconstructs from surviving runs alone.
+
 Dry run is the default. Deleting requires --yes.
 """
 from __future__ import annotations
@@ -18,6 +24,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from catnip import derive
 from catnip.config import Config, ConfigError, run_dirs
 
 
@@ -29,10 +36,18 @@ def ingested_runs(history_file: Path) -> set:
     return set(store.get("fetches_ingested", []))
 
 
-def plan(runs_dir, history_file, retain_days: int, keep_latest: int = 1):
+def plan(runs_dir, history_file, retain_days: int, keep_latest: int = 1, now=None):
     """Return (delete, keep) where each entry is (path, reason)."""
     runs = run_dirs(runs_dir)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=retain_days)
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=retain_days)
+    # A run's newest day is its own, and GitHub is still adding counts to a
+    # day for SETTLE_HOURS after it closes. Until then this run holds
+    # observations the store may yet be corrected by, and it is the only
+    # on-disk copy: `history --rebuild` can reconstruct nothing it deleted.
+    # Retention is normally days and this is hours, so it is a floor that
+    # almost never binds — and the one time it does is the time it matters.
+    settle_cutoff = now - timedelta(hours=derive.settle_hours()) - timedelta(days=1)
     ingested = ingested_runs(history_file)
     protected = {d.name for d in runs[-keep_latest:]} if keep_latest else set()
 
@@ -43,11 +58,14 @@ def plan(runs_dir, history_file, retain_days: int, keep_latest: int = 1):
         except ValueError:
             keep.append((run, "unrecognized run id"))
             continue
-        age = (datetime.now(timezone.utc) - when).days
+        age = (now - when).days
         if run.name in protected:
             keep.append((run, f"newest run ({age}d)"))
         elif when >= cutoff:
             keep.append((run, f"within retention ({age}d < {retain_days}d)"))
+        elif when >= settle_cutoff:
+            keep.append((run, f"observed days GitHub may still revise "
+                              f"(settling for {derive.settle_hours()}h)"))
         elif run.name not in ingested:
             # The whole point of this module.
             keep.append((run, f"NOT INGESTED — deleting would lose {age}d-old traffic days"))

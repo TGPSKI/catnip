@@ -35,8 +35,37 @@ quantity here is expected to arrive with its entry there.
 from __future__ import annotations
 
 import math
+import os
+import re
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+
+#: Run directory stamp, e.g. 20260807T120728Z.
+_STAMP = re.compile(r"^\d{8}T\d{6}Z$")
+
+#: How long after a day closes GitHub is still adding counts to it. Measured,
+#: not documented — see `settled_day` for the readings and `docs/metrics.md`
+#: for the method. A day is reported only once this much time has passed
+#: since its own UTC midnight close.
+#:
+#: A floor, not a default: `CATNIP_SETTLE_HOURS` can raise it when an account
+#: settles slower than this one did, and cannot lower it. Lowering is the
+#: change that silently reintroduces the bug — a shorter wait costs nothing
+#: visible and publishes a third of a day's traffic as the whole of it.
+SETTLE_HOURS_FLOOR = 36
+
+
+def settle_hours():
+    """The effective settling wait, in hours.
+
+    Read through a function rather than frozen at import so a test, a shell
+    and a long-running TUI all see the same value from the same environment.
+    """
+    raw = os.environ.get("CATNIP_SETTLE_HOURS")
+    try:
+        return max(SETTLE_HOURS_FLOOR, int(raw))
+    except (TypeError, ValueError):
+        return SETTLE_HOURS_FLOOR
 
 #: Trailing days per timeframe key. None means "the whole store".
 WINDOW_DAYS = {"1d": 1, "1w": 7, "2w": 14, "all": None, "epoch": None}
@@ -103,8 +132,128 @@ def store_days(store):
 
 
 def latest_day(store):
+    """The newest date observed, settled or not. `settled_day` is what a
+    window, a ranking or a freshness check should ask for."""
     days = store_days(store)
     return days[-1] if days else None
+
+
+def fetch_time(stamp):
+    """The UTC instant of a run stamp like `20260807T120728Z`, or None."""
+    try:
+        if not _STAMP.match(stamp):
+            return None
+    except TypeError:
+        return None
+    return datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+
+
+def fetch_day(stamp):
+    """The UTC date of a run stamp, or None."""
+    ts = fetch_time(stamp)
+    return ts.date().isoformat() if ts else None
+
+
+def latest_fetch(store):
+    """The UTC instant of the newest fetch merged into the store, or None
+    when no run stamp survives (a hand-built or imported store)."""
+    times = [t for t in (fetch_time(s) for s in (store or {}).get("fetches_ingested") or [])
+             if t]
+    return max(times) if times else None
+
+
+def latest_fetch_day(store):
+    """The UTC date of the newest fetch merged into the store, or None."""
+    ts = latest_fetch(store)
+    return ts.date().isoformat() if ts else None
+
+
+def settled_edge(fetched, hours=None):
+    """The newest day a fetch at `fetched` saw finished, or None.
+
+    `fetched` is a datetime or a run stamp. A day is finished only once its
+    own UTC close is `hours` behind the read.
+    """
+    if isinstance(fetched, str):
+        fetched = fetch_time(fetched)
+    if fetched is None:
+        return None
+    hours = settle_hours() if hours is None else hours
+    # The newest day whose close (D+1 at 00:00Z) is at or before the cutoff
+    # is the day before the cutoff's own date, for every time of day.
+    cutoff = fetched - timedelta(hours=hours)
+    return (cutoff.date() - timedelta(days=1)).isoformat()
+
+
+def settled_rows(rows, fetched, key="timestamp"):
+    """`rows` minus the days that fetch had not finished counting.
+
+    For the per-run analyses, which read GitHub's payloads straight out of a
+    run directory and never see the store. The run's own stamp is the read
+    time, so the same rule applies without a store to ask.
+
+    The written CSVs are deliberately not filtered this way: they are the
+    record of what GitHub returned, and `history.py` max-merges them, so a
+    day trimmed at write time is a day the store can never be corrected by.
+    Settling is a read-time rule.
+    """
+    edge = settled_edge(fetched)
+    rows = [r for r in rows if isinstance(r, dict)]
+    if edge is None:
+        return rows
+    return [r for r in rows if (r.get(key) or "")[:10] <= edge]
+
+
+def settled_day(store, fetched=None):
+    """The newest day whose counts GitHub had finished revising.
+
+    GitHub's traffic window ends on the day the fetch runs, and that day is
+    returned as a flat zero — the counts appear afterwards. They keep
+    appearing for well over a day. Measured by re-reading one day out of
+    four run directories, same 35 repos every read, as a share of what that
+    day eventually settled at:
+
+        read 12h after it closed:   33% of views,  47% of clones
+        read 30h after it closed:  100%           100%
+        read 36h after it closed:  100%           100%
+
+    A second day bounds the far end: identical at +36h, +54h, +60h and
+    +114h, so a day is final at 36 hours and stays final 78 hours later.
+    Days older than the window were identical in every read. The late
+    arrivals were not spread evenly: seven repos went from exactly zero to
+    their full count, and four of them had been pushed on the day in
+    question. Traffic to a freshly pushed repo is the part that lands late,
+    which for a tool that ranks repos by recent traffic is the part that
+    most distorts the ranking.
+
+    Shares, not counts: the counts are account traffic, which GitHub shows
+    only to the account's admin. When the value stopped changing is what
+    fixes the constant.
+
+    So the edge is `settle_hours()` behind the newest fetch, not a fixed
+    number of calendar days: the same day-count means different amounts of
+    settling depending on what time the timer runs, and this rule holds
+    whatever hour it fires. GitHub documents none of this — it says only
+    that clone and visitor information "update hourly" — so the constant is
+    measured, and `docs/metrics.md` carries the measurement.
+
+    Zero is a legal value for a settled day (this account recorded ten of
+    them in June), so the edge never hunts for the last day with traffic:
+    that would relabel a quiet Sunday as an unfinished one and slide every
+    window a day left without saying so.
+
+    `fetched` overrides the store's own stamps for a caller that knows the
+    fetch it is reading (the TUI, pointed at one run directory). Returns
+    None when the store holds nothing settled yet.
+    """
+    days = store_days(store)
+    if not days:
+        return None
+    edge = settled_edge(fetched or latest_fetch(store))
+    if edge is None:
+        return days[-1]
+    settled = [d for d in days if d <= edge]
+    return settled[-1] if settled else None
 
 
 def window(store, timeframe, end=None):
@@ -114,11 +263,16 @@ def window(store, timeframe, end=None):
     would silently stretch "last 7 days" across a fortnight whenever the
     timer missed a night, and every rate computed from it would be wrong
     by exactly the amount nobody would notice.
+
+    The window ends at `settled_day`, so the fetch day's half-counted
+    bucket is outside every window rather than being the whole of `1d`.
     """
     days = store_days(store)
     if not days:
         return []
-    end = end or days[-1]
+    end = end or settled_day(store)
+    if end is None:
+        return []
     n = WINDOW_DAYS.get(timeframe, 14)
     if n is None:
         return [d for d in days if d <= end]
@@ -737,7 +891,11 @@ def release_response(store, repo, metric="clones"):
     """
     section = ((store or {}).get("events") or {}).get(repo) or {}
     releases = sorted((day, tag) for tag, day in (section.get("releases") or {}).items())
-    days = store_days(store)
+    # Through `window`, like every other store computation here: a release
+    # from the last day or two would otherwise have its follow-on traffic
+    # summed over days GitHub has not finished counting, and this repo's own
+    # history is the baseline every other release is judged against.
+    days = window(store, "all")
     if not releases or not days:
         return []
     index = {d: i for i, d in enumerate(days)}
@@ -1026,6 +1184,11 @@ DERIVATIONS = {
         "  A row shows 'n/a' instead of a delta when the store does not yet",
         "  reach back a second full window. A negative delta here is a real",
         "  decline.",
+        "",
+        "  Every window ends on the settled day: the day before the newest",
+        "  fetch. GitHub's bucket for the day a fetch runs is still filling",
+        "  when the fetch reads it, so that day is in the store reading zero",
+        "  everywhere and is outside every window here.",
         "",
         "  inputs: durable daily store, raw counts (uniques shown alongside).",
     ],

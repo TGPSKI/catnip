@@ -47,6 +47,26 @@ class PruneTests(unittest.TestCase):
     def set_ingested(self, *names):
         self.history.write_text(json.dumps({"fetches_ingested": list(names)}), encoding="utf-8")
 
+    def test_a_run_whose_days_are_still_settling_is_kept(self):
+        # Retention of zero days would otherwise delete yesterday's run the
+        # moment it was ingested. It is the only on-disk record of days
+        # GitHub has not finished counting, and `history --rebuild`
+        # reconstructs from surviving runs alone.
+        recent = self.add_run(1)
+        self.add_run(0)
+        self.set_ingested(recent)
+        delete, keep = prune.plan(self.runs, self.history, retain_days=0)
+        self.assertNotIn(recent, [p.name for p, _ in delete])
+        self.assertIn("settling", dict((p.name, why) for p, why in keep)[recent])
+
+    def test_a_run_past_the_settling_window_is_still_prunable(self):
+        # The floor must not become a second retention policy.
+        old = self.add_run(5)
+        self.add_run(0)
+        self.set_ingested(old)
+        delete, _ = prune.plan(self.runs, self.history, retain_days=0)
+        self.assertEqual([p.name for p, _ in delete], [old])
+
     def test_old_ingested_runs_are_deleted(self):
         old = self.add_run(90)
         self.add_run(0)

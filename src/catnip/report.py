@@ -25,6 +25,7 @@ overridable, because a prototype that cannot re-run is not a prototype.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -70,7 +71,33 @@ def load_meta(report_dir):
         return {}
 
 
-def guard(reports_dir, store, now=None):
+def window_digest(store, timeframe):
+    """A fingerprint of the numbers a report for `timeframe` would state.
+
+    GitHub keeps adding counts to a day for well over a day after it closes,
+    and it does not always finish inside `derive.settle_hours()` — that
+    constant is a measurement, not a guarantee GitHub has made. When a late
+    arrival lands on a day a report already covered, the store is corrected
+    and the report is not: it keeps asserting a number the store no longer
+    holds, and nothing ever revisits it, because the only question the guard
+    used to ask was whether a *new* day had appeared.
+
+    This is the answer to "has anything I already said changed?". It covers
+    the window's days and every per-repo total in them, so a single repo's
+    backfilled day is enough to mark the report stale.
+    """
+    days = derive.window(store, timeframe)
+    if not days:
+        return None
+    parts = [",".join(days)]
+    for repo in sorted(derive.repo_names(store)):
+        for metric in derive.METRICS:
+            parts.append(f"{repo}:{metric}:"
+                         f"{derive.total(store, repo, metric, days)}")
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+def guard(reports_dir, store, now=None, timeframe="2w"):
     """(ok, reason). False means running again would say nothing new.
 
     Store-advance is the real test: if the newest day catnip has observed
@@ -78,23 +105,53 @@ def guard(reports_dir, store, now=None):
     output would be too, however long you waited. The clock floor is a
     cheap second opinion for the case where a store gains a day every few
     hours (a backfill, a rebuild) and the analysis has not settled.
+
+    The day compared is the settled one. Every fetch adds its own date to
+    the store whether or not GitHub has counted it, so comparing newest
+    days meant the store "advanced" on any day a fetch ran — the guard
+    passed on a bucket with nothing in it.
+
+    A new day is not the only thing worth reporting. A day already covered
+    can be revised upward days later, and a report that stated the old
+    number stays wrong forever unless something notices. So when the day
+    has not moved, the window's own numbers are compared against the digest
+    the last report recorded, and a difference is grounds to write again.
     """
     now = now or datetime.now(timezone.utc)
     prior = previous_reports(reports_dir)
     if not prior:
         return True, "no previous report"
     meta = load_meta(prior[-1])
-    latest = derive.latest_day(store)
+    latest = derive.settled_day(store)
     seen = meta.get("latest_day")
+    if seen and "settle_hours" not in meta:
+        # A report written before settling existed. Its `latest_day` is the
+        # store's newest day, which is the fetch's own uncounted day — two
+        # days ahead of what that report actually covered on this account.
+        # Comparing a settled day against it is comparing two different
+        # measurements that share a name, and it resolves the wrong way:
+        # the guard suppresses reports until the settled day catches up,
+        # which is precisely the cycles during which the store is gaining
+        # the settled days worth reporting. Its window was a different
+        # range of days too, so there is nothing to compare and a fresh
+        # report is owed.
+        return True, ("the last report predates the settling window: its "
+                      "latest_day is a fetch day, and it covered a "
+                      "different range of days")
     if seen and latest:
         # Decisive either way: the store is the input, and whether it has
         # gained a day is the whole question. The clock is not consulted
         # when the data itself can answer — a new day is new information
         # an hour after the last report as much as a week after.
-        if latest <= seen:
-            return False, (f"the store's latest day is still {latest}; the last "
-                           f"report already covered it. Nothing new to analyse.")
-        return True, f"store advanced to {latest}"
+        if latest > seen:
+            return True, f"store advanced to {latest}"
+        digest = window_digest(store, timeframe)
+        recorded = meta.get("window_digest")
+        if recorded and digest and digest != recorded:
+            return True, (f"the days through {latest} were revised since the "
+                          f"last report; its numbers no longer match the store")
+        return False, (f"the store's latest day is still {latest}; the last "
+                       f"report already covered it. Nothing new to analyse.")
     # Only when the store cannot answer — an older report with no
     # latest_day recorded — does the clock get a say.
     written = meta.get("written")
@@ -146,6 +203,8 @@ def section_provenance(store, cfg, timeframe, run_dir, now):
          + (f", {days[0]} to {days[-1]}" if days else "") + ")"],
         ["store coverage", "  ".join(f"{a} to {b}" for a, b in coverage) or "n/a"],
         ["store days", len(derive.store_days(store))],
+        # The fetch day's bucket is still filling, so no window ends there.
+        ["settled through", derive.settled_day(store) or "n/a"],
         ["repos in store", len(derive.repo_names(store))],
         ["run analysed", run_dir.name if run_dir else "none (store only)"],
         ["schema", store.get("schema_version", "?")],
@@ -424,11 +483,21 @@ def write_report(text, reports_dir, store, timeframe, run_dir, now=None):
     (out_dir / "report.md").write_text(text, encoding="utf-8")
     meta = {
         "written": stamp,
-        "latest_day": derive.latest_day(store),
+        # The day the report actually covers, which `guard` compares against
+        # on the next cycle. It must be the same day the windows end on.
+        "latest_day": derive.settled_day(store),
+        # Both days, named apart. The whole defect this file now guards
+        # against was two different measurements sharing the name
+        # `latest_day` across a version boundary.
+        "store_latest_day": derive.latest_day(store),
         "store_days": len(derive.store_days(store)),
         "timeframe": timeframe,
         "run": run_dir.name if run_dir else None,
         "provenance": MEASURED,
+        # What this report asserted, so the next cycle can tell whether a
+        # late arrival has since changed a day it already described.
+        "window_digest": window_digest(store, timeframe),
+        "settle_hours": derive.settle_hours(),
     }
     (out_dir / "meta.json").write_text(
         json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -465,7 +534,7 @@ def main(argv=None):
 
     reports_dir = args.out_dir or cfg.reports_dir
     if not args.stdout:
-        ok, reason = guard(reports_dir, store)
+        ok, reason = guard(reports_dir, store, timeframe=args.timeframe)
         if not ok and not args.force:
             print(f"catnip: skipping report — {reason}", file=sys.stderr)
             print("catnip: pass --force to write anyway.", file=sys.stderr)

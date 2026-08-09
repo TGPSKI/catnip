@@ -17,9 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from catnip.ui import DAY_WINDOW, AnalyticsData  # noqa: E402
 
 
-def _write_run(root, timeseries, history=None):
-    """Build a minimal data dir: <root>/runs/<id>/analysis + <root>/stats."""
-    run = root / "runs" / "20260804T110003Z"
+def _write_run(root, timeseries, history=None, run_id="20260806T120000Z"):
+    """Build a minimal data dir: <root>/runs/<id>/analysis + <root>/stats.
+
+    `run_id` is not decoration: the run stamp is what decides how much of the
+    data has finished settling, so a fixture whose stamp sits next to its
+    newest row is a fixture with an empty window.
+    """
+    run = root / "runs" / run_id
     analysis = run / "analysis"
     analysis.mkdir(parents=True)
     (root / "stats" / "history").mkdir(parents=True)
@@ -66,7 +71,8 @@ class WindowingTests(unittest.TestCase):
         for d in range(1, 15):
             rows += [_ts("a", "views", d, d), _ts("b", "views", d, 1),
                      _ts("a", "clones", d, 2), _ts("b", "clones", d, 1)]
-        data = AnalyticsData(_write_run(self.root, rows))
+        # Stamped late enough that all 14 days have settled.
+        data = AnalyticsData(_write_run(self.root, rows, run_id="20260817T000000Z"))
         for tf in ("1d", "1w", "2w"):
             n = DAY_WINDOW[tf]
             self.assertEqual(
@@ -93,7 +99,7 @@ class WindowingTests(unittest.TestCase):
 
     def test_all_falls_back_to_csv_without_a_store(self):
         rows = [_ts("a", "views", d, 5) for d in range(1, 4)]
-        data = AnalyticsData(_write_run(self.root, rows))
+        data = AnalyticsData(_write_run(self.root, rows, run_id="20260806T000000Z"))
         self.assertEqual(sum(data.windowed_views("all").values()), 15)
 
     def test_empty_run_is_survivable(self):
@@ -101,6 +107,48 @@ class WindowingTests(unittest.TestCase):
         self.assertEqual(data.windowed_views("2w"), {})
         self.assertEqual(data.windowed_views("all"), {})
         self.assertEqual(data.daily_views, [])
+
+    def test_one_day_ranks_a_day_with_counts_not_the_unsettled_tail(self):
+        # The store's newest days are the ones GitHub is still counting: they
+        # read zero for every repo. Ranking on them printed an empty
+        # "Top 10 by Views (last day)" in alphabetical order.
+        history = {"repos": {"a": {"views": {"2026-08-03": [9, 3],
+                                             "2026-08-04": [0, 0],
+                                             "2026-08-05": [0, 0]},
+                                   "clones": {"2026-08-03": [4, 2],
+                                              "2026-08-04": [0, 0],
+                                              "2026-08-05": [0, 0]}}},
+                   "fetches_ingested": ["20260805T120000Z"]}   # settles through 08-03
+        rows = [_ts("a", "views", 3, 9), _ts("a", "clones", 3, 4)]
+        data = AnalyticsData(_write_run(self.root, rows, history))
+        self.assertEqual(data.settled_day(), "2026-08-03")
+        self.assertEqual(data.windowed_views("1d"), {"a": 9})
+        self.assertEqual(data.windowed_clones("1d"), {"a": 4})
+
+    def test_the_unsettled_tail_is_off_the_chart_too(self):
+        # The chart and the top lists read the same trimmed series, or the
+        # headline shows a cliff to zero the ranking says did not happen.
+        history = {"repos": {"a": {"views": {"2026-08-03": [9, 3],
+                                             "2026-08-04": [0, 0]},
+                                   "clones": {}}},
+                   "fetches_ingested": ["20260805T120000Z"]}
+        data = AnalyticsData(_write_run(self.root, [], history))
+        self.assertEqual([b["ts"] for b in data.daily_views], ["2026-08-03"])
+
+    def test_a_store_without_run_stamps_keeps_its_newest_day(self):
+        history = {"repos": {"a": {"views": {"2026-08-05": [9, 3],
+                                             "2026-08-06": [2, 1]},
+                                   "clones": {}}}}
+        data = AnalyticsData(_write_run(self.root, [], history))
+        self.assertEqual(data.windowed_views("1d"), {"a": 2})
+
+    def test_the_header_names_the_newest_day_it_is_showing(self):
+        # "last day" is two days ago. Saying so is the difference between a
+        # window and a claim about recency.
+        history = {"repos": {"a": {"views": {"2026-08-03": [9, 3]}, "clones": {}}},
+                   "fetches_ingested": ["20260805T120000Z"]}
+        data = AnalyticsData(_write_run(self.root, [], history))
+        self.assertEqual(data.settled_day(), "2026-08-03")
 
     def test_explicit_store_paths_win_over_layout_inference(self):
         # A run directory copied out of the data dir keeps working when the

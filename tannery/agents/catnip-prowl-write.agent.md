@@ -17,6 +17,7 @@ Two turns: the first records the package, the second writes the state file.
 write_state only becomes available in the second.
 
 ---
+require_tool: [catnip-prowl-record]
 Call catnip-prowl-record once. cycle is the date on the CYCLE line, copied
 verbatim; analysis is everything below that line, unchanged. Parsing and
 counting the blocks is the tool's job, not yours - it records every block or
@@ -31,6 +32,7 @@ rejection it named.
 
 ---
 toolsets: [catnip-record]
+require_tool: [write_state]
 Write this to .state/catnip-prowl.json with write_state, on failure as well
 as success:
 

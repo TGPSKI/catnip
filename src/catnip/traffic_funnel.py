@@ -7,6 +7,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from catnip import runfiles
+from catnip.config import slug_for
+
 
 def safe_int(val, default=0):
     if val is None:
@@ -131,20 +134,12 @@ def analyze_funnel(raw):
 
     for ro in repos_list:
         rn = ro.get("name", "unknown")
-        rn_f = rn.replace("/", "_").replace("-", "--")
+        rn_f = slug_for(rn)
 
-        # Load view total
-        vp = raw / f"raw/repo_{rn_f}_views.json"
-        total_views = 0
-        total_unique_visitors = 0
-        if vp.is_file():
-            try:
-                vd = json.load(vp.open())
-                if isinstance(vd, dict):
-                    total_views = safe_int(vd.get("count", 0))
-                    total_unique_visitors = safe_int(vd.get("uniques", 0))
-            except (json.JSONDecodeError, OSError):
-                pass
+        # The window totals, not a daily series: GitHub reports these
+        # alongside the days, and the popular-paths snapshot they are
+        # divided by has no daily grain to settle.
+        total_views, total_unique_visitors = runfiles.totals(raw, rn, "views")
 
         # Load popular paths
         pp = raw / f"raw/repo_{rn_f}_paths.json"

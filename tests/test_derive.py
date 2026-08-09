@@ -8,22 +8,31 @@ artifact, a spike the detector cannot see, a composite that scores
 "unknown" as "zero", and a correlation that is one release wave agreeing
 with itself.
 """
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from catnip import derive as D  # noqa: E402
 
 
-def store(repos, referrers=None, events=None):
-    """Build a store dict. repos: {name: {metric: {day: [count, uniques]}}}."""
+def store(repos, referrers=None, events=None, fetches=None):
+    """Build a store dict. repos: {name: {metric: {day: [count, uniques]}}}.
+
+    `fetches` are run stamps (`20260807T120728Z`); without them the store
+    cannot say which day was still being counted, and every day is treated
+    as settled.
+    """
     out = {"schema_version": 2, "owner": "test", "repos": repos}
     if referrers is not None:
         out["referrers"] = referrers
     if events is not None:
         out["events"] = events
+    if fetches is not None:
+        out["fetches_ingested"] = fetches
     return out
 
 
@@ -73,6 +82,115 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(D.window(store({}), "1w"), [])
         self.assertIsNone(D.latest_day(store({})))
         self.assertEqual(D.deltas(store({}), "1w"), {})
+
+
+class SettledDayTests(unittest.TestCase):
+    """A day is not reportable until GitHub has stopped adding to it.
+
+    Measured against this account's raw API payloads (docs/metrics.md): a day
+    read 12h after it closed carried a third of its final count, and the same
+    day read 30h after it closed was complete. `1d` anchored on the newest
+    day in the store therefore ranked nothing at all, because the newest day
+    in the store is the one the fetch had just started counting.
+    """
+
+    def setUp(self):
+        # Six days of traffic, then the fetch day, which always reads zero.
+        series = {d: [5, 2] for d in days(1, 6)}
+        series["2026-07-07"] = [0, 0]
+        # 05:07 UTC on the 7th: 36h back is 17:07 on the 5th, so the 5th had
+        # not closed early enough and the 4th is the newest finished day.
+        self.s = store({"a": {"clones": series, "views": series}},
+                       fetches=["20260707T050700Z"])
+
+    def test_the_settled_day_trails_the_newest_day(self):
+        self.assertEqual(D.latest_day(self.s), "2026-07-07")
+        self.assertEqual(D.settled_day(self.s), "2026-07-04")
+
+    def test_one_day_ranks_a_day_that_has_counts(self):
+        win = D.window(self.s, "1d")
+        self.assertEqual(win, ["2026-07-04"])
+        self.assertEqual(D.total(self.s, "a", "clones", win), 5)
+
+    def test_no_window_reaches_past_the_settled_day(self):
+        for tf in ("1d", "1w", "2w", "all"):
+            self.assertEqual(D.window(self.s, tf)[-1], "2026-07-04", tf)
+
+    def test_the_hour_of_the_fetch_moves_the_edge(self):
+        # The reason the edge is hours and not a day count: the same calendar
+        # day of fetching settles a different number of days depending on
+        # when the timer fires. 36h before 11:07 is still the 5th; 36h before
+        # 12:07 has crossed into the 6th, which frees the 5th.
+        early = store({"a": flat("clones", [1] * 7)}, fetches=["20260707T110700Z"])
+        late = store({"a": flat("clones", [1] * 7)}, fetches=["20260707T120700Z"])
+        self.assertEqual(D.settled_day(early), "2026-07-04")
+        self.assertEqual(D.settled_day(late), "2026-07-05")
+
+    def test_the_constant_is_the_only_place_the_lag_is_stated(self):
+        s = store({"a": flat("clones", [1] * 7)}, fetches=["20260707T120700Z"])
+        self.assertEqual(D.SETTLE_HOURS_FLOOR, 36)
+        self.assertEqual(D.settle_hours(), 36)
+        self.assertEqual(D.settled_edge("20260707T120700Z"), "2026-07-05")
+        # Every hour of lag is honoured, not rounded to whole days.
+        self.assertEqual(D.settled_edge("20260707T120700Z", hours=12), "2026-07-06")
+        self.assertEqual(D.settled_edge("20260707T120700Z", hours=60), "2026-07-04")
+        self.assertEqual(D.settled_day(s), "2026-07-05")
+
+    def test_a_quiet_day_is_still_a_settled_day(self):
+        # The edge is fixed by the clock, never by hunting for the last day
+        # with traffic: an account can record a genuine zero, and reading that
+        # as "unfinished" slides every window a day to the left.
+        series = {d: [5, 2] for d in days(1, 3)}
+        series["2026-07-04"] = [0, 0]
+        quiet = store({"a": {"clones": series, "views": series}},
+                      fetches=["20260707T050700Z"])
+        self.assertEqual(D.settled_day(quiet), "2026-07-04")
+        self.assertEqual(D.window(quiet, "1d"), ["2026-07-04"])
+
+    def test_the_newest_fetch_sets_the_edge(self):
+        s = store({"a": flat("clones", [1] * 7)},
+                  fetches=["20260701T050000Z", "20260707T120700Z", "20260703T050000Z"])
+        self.assertEqual(D.latest_fetch_day(s), "2026-07-07")
+        self.assertEqual(D.settled_day(s), "2026-07-05")
+
+    def test_a_store_with_no_run_stamps_trusts_its_newest_day(self):
+        # An imported or hand-built store cannot say when it was fetched.
+        # Refusing to render it would be worse than showing what it holds.
+        s = store({"a": flat("clones", [1] * 7)})
+        self.assertIsNone(D.latest_fetch(s))
+        self.assertEqual(D.settled_day(s), "2026-07-07")
+        self.assertEqual(D.window(s, "1d"), ["2026-07-07"])
+
+    def test_an_unparseable_stamp_is_ignored(self):
+        s = store({"a": flat("clones", [1] * 7)}, fetches=["not-a-stamp", None])
+        self.assertIsNone(D.latest_fetch(s))
+        self.assertEqual(D.settled_day(s), "2026-07-07")
+
+    def test_a_store_with_nothing_settled_yet_says_so(self):
+        s = store({"a": {"clones": {"2026-07-07": [0, 0]}}},
+                  fetches=["20260707T050700Z"])
+        self.assertIsNone(D.settled_day(s))
+        self.assertEqual(D.window(s, "1d"), [])
+
+    def test_the_override_may_raise_the_wait_and_never_lower_it(self):
+        # An account that settles slower than this one can wait longer. It
+        # cannot wait less: a shorter wait costs nothing visible and
+        # republishes a third of a day's traffic as the whole of it.
+        s = store({"a": flat("clones", [1] * 9)}, fetches=["20260709T120000Z"])
+        self.assertEqual(D.settled_day(s), "2026-07-07")
+        with mock.patch.dict(os.environ, {"CATNIP_SETTLE_HOURS": "60"}):
+            self.assertEqual(D.settle_hours(), 60)
+            self.assertEqual(D.settled_day(s), "2026-07-06")
+        for bad in ("1", "0", "-40", "not a number", ""):
+            with mock.patch.dict(os.environ, {"CATNIP_SETTLE_HOURS": bad}):
+                self.assertEqual(D.settle_hours(), 36, bad)
+
+    def test_the_previous_window_abuts_the_settled_one(self):
+        s = store({"a": flat("clones", [1] * 21)}, fetches=["20260721T120000Z"])
+        cur, prev = D.window(s, "1w"), D.previous_window(s, "1w")
+        self.assertEqual(cur[-1], "2026-07-19")
+        self.assertEqual(len(prev), 7)
+        self.assertLess(prev[-1], cur[0])
 
 
 class SeriesTests(unittest.TestCase):

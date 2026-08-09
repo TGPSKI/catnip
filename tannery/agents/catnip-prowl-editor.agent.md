@@ -36,6 +36,7 @@ Close the turn with the composed document and nothing else.
 
 ---
 toolsets: [catnip-edit-publish]
+require_tool: [catnip-prowl-edit-publish]
 Call catnip-prowl-edit-publish with the document you composed as the
 document argument, unchanged.
 
