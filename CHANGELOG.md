@@ -5,78 +5,99 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-09
+
+GitHub keeps adding counts to a day for well over a day after it closes, and
+documents none of it. Every window catnip drew ended on days that were still
+being counted, and the tannery agent that was supposed to notice reported
+success without running anything.
+
+### Added
+
+- **`CATNIP_SETTLE_HOURS`** — how long after a day closes GitHub is still
+  adding to it. 36 is a measured floor: the variable raises the wait for an
+  account that settles slower and cannot lower it, because a short wait
+  costs nothing visible and publishes part of a day as all of it.
+- **`catnip.runfiles`** — one reader for a run directory's raw payloads,
+  shared by the four traffic analyses. Each had its own copy of the
+  `raw/repo_<slug>_<endpoint>.json` convention, and each copy inlined
+  `config.slug_for` *without* its sanitizing step: a repo whose name carries
+  any character outside `[A-Za-z0-9_.-]` resolved to a filename the fetcher
+  never wrote, `is_file()` returned False, and the repo left anomaly,
+  profile, funnel and correlation output with no error and no row. No repo
+  on this account triggers it today.
+- `meta.json` records `window_digest`, `settle_hours` and
+  `store_latest_day`.
+
+### Changed
+
+- **Windows move back.** No window ends inside the settling wait, so at a
+  midday cron `1d` covers the day before yesterday. The TUI header names the
+  day it is showing instead of calling it "last day", and the report's
+  provenance table carries a `settled through` row.
+- **Correlation is more conservative.** A repo whose third non-zero day was
+  an unsettled one no longer qualifies for the pair scan.
+- **Upgrading is handled, not waited out.** `meta.json` changed what
+  `latest_day` means: reports written before this recorded the store's
+  newest day, which is a fetch day and ahead of what those reports covered.
+  Comparing a settled day against it suppresses reports for exactly the
+  cycles the store is gaining settled days, so a `meta.json` without
+  `settle_hours` is recognised as pre-settling and does not gate the next
+  report.
+- The tannery needs **leather v0.5.3** or newer. Older builds parse
+  `require_tool:` as prompt text instead of enforcing it.
 
 ### Fixed
 
 - **No window ends on a day GitHub has not finished counting.** The last-day
-  view printed a column of zeros, ranked alphabetically, because the newest
+  view printed a column of zeros ranked alphabetically, because the newest
   day in the store is the day the fetch ran and GitHub returns that day as a
-  flat zero. The counts arrive afterwards, and they keep arriving: re-reading
-  one day out of four run directories, over the same 35 repos every time, it
-  carried 33% of its final views and 47% of its final clones at 12h after
-  closing, and was complete at 30h. Days older than that were identical in
-  every read. `derive.settled_day` ends every window 36 hours behind
-  the newest fetch — hours, not a day count, because the same "two days
-  back" means different amounts of settling depending on what hour the timer
-  fires. The TUI charts and top lists, the report's windows, its `meta.json`
-  and the interval guard all read it, and the TUI header names the day it is
-  showing rather than calling it "last day". `CATNIP_SETTLE_HOURS` raises
-  the wait and cannot lower it. GitHub documents none of this behaviour;
-  `docs/metrics.md` carries the measurement and
+  flat zero. Re-reading one day out of four run directories, over the same
+  35 repos every time, it carried 33% of its final views and 47% of its
+  final clones at 12h after closing and was complete at 30h; days older than
+  that were identical in every read. `derive.settled_day` ends every window
+  `settle_hours()` behind the newest fetch — hours, not a day count, because
+  the same "two days back" means different amounts of settling depending on
+  what hour the timer fires. `docs/metrics.md` carries the measurement and
   [#5](https://github.com/TGPSKI/catnip/issues/5) tracks making it
   self-checking.
 - **The edge is never the last day carrying traffic.** Trimming trailing
-  zeros would have been the easy fix and is wrong: this account recorded ten
+  zeros was the tempting fix and is wrong: this account recorded ten
   genuinely empty days in June, and reading a quiet day as an unfinished one
-  slides every window a day left and says nothing about it. The previous
-  code did exactly this on the CSV path, where it had been dead for as long
-  as a store existed.
+  slides every window a day left without saying so. The previous code did
+  exactly that on the CSV path, where it had been dead for as long as a
+  store existed.
+- **Trend arrows were biased downward.** `totals.py` summed `clones_7d` over
+  a window ending on the fetch day while `clones_prior_7d` was complete, so
+  the comparison measured the shape of the collection.
+- **The per-run analyses no longer score days GitHub is still counting.** A
+  run filed a `minor dip` against a day eighteen hours old. The anomaly
+  detector, clone profiler and correlation analysis read settled days now,
+  which also lifts their baselines onto complete data.
 - **`catnip report` no longer treats a fetch as new data, and no longer
   freezes a day it got wrong.** The interval guard compared the store's
   newest day, which advances on every run whether or not GitHub counted
-  anything, so the store always looked advanced. It compares settled days
-  now. It also records a `window_digest` of the numbers each report stated
-  and writes again when a day that report already covered has since been
-  revised — without it, a report written before a day settled kept asserting
-  a third of that day's traffic forever, because the only question asked was
+  anything. It compares settled days now, and records a `window_digest` of
+  the numbers each report stated so a day revised after publication reopens
+  the report. Without it, a report written before a day settled asserted a
+  third of that day's traffic forever, because the only question asked was
   whether a *new* day had appeared.
-- **`catnip prune` keeps runs whose days may still be revised.** Being
-  ingested means a run's numbers are in the store, not that they were the
-  final numbers. The run directory is the only record of what one fetch saw,
-  `history --rebuild` reconstructs from surviving runs alone, and today's
-  measurement was only possible because three runs happened to survive.
+- **`catnip prune` keeps runs whose days may still be revised.** Ingested
+  means a run's numbers are in the store, not that they were the final
+  numbers. The run directory is the only record of what one fetch saw, and
+  `history --rebuild` reconstructs from surviving runs alone.
 - **A tannery turn that must act can no longer end on prose.** The collect
   agent answered "catnip-run call succeeded" without calling it on
   2026-08-08 and 2026-08-09, finished in 1.4s instead of 41 minutes, and
-  recorded an invented `latest_day: 2024-01-15` over a store that had not
-  been touched — as `success`. Replayed against the same served model, the
-  tool was in scope every time and the model answered in prose in 4 of 16
-  samples. Every acting turn now declares `require_tool:` (leather v0.5.3),
-  and the record turns write `unmeasured` with `action: failed` when a
-  `{{value}}` arrives unsubstituted. Requires leather v0.5.3 or newer.
-- **The per-run analyses no longer score days GitHub is still counting.**
-  A run filed a `minor dip` against a day eighteen hours old — the shape of
-  the collection, not of the repo. The
-  anomaly detector, clone profiler and correlation analysis now read settled
-  days, which also lifts their baselines onto complete data. Correlation
-  gets more conservative as a result: a repo whose third non-zero day was an
-  unsettled one no longer qualifies, so this account drops from 42 pairs to
-  29.
-- **One reader for a run's raw payloads.** Each of the four traffic analyses
-  had its own copy of the `raw/repo_<slug>_<endpoint>.json` convention, and
-  each copy inlined `config.slug_for` *without* its sanitizing step. A repo
-  whose name carries any character outside `[A-Za-z0-9_.-]` resolved to a
-  filename the fetcher never wrote, `is_file()` returned False, and the repo
-  left anomaly, profile, funnel and correlation output with no error and no
-  row. No repo on this account triggers it today. They now share
-  `catnip.runfiles`, which resolves paths through `slug_for` and returns
-  series already bounded to the settled days.
+  recorded an invented `latest_day: 2024-01-15` over an untouched store, as
+  `success`. Replayed against the same served model the tool was in scope
+  every time, and the model answered in prose in 4 of 16 samples. Every
+  acting turn declares `require_tool:`, and record turns write `unmeasured`
+  with `action: failed` when a `{{value}}` arrives unsubstituted.
 - **The tannery no longer does date arithmetic in the model.**
   `catnip-store-status` emits `settled_day`, `settled_expected` and a
-  `stale: yes|no` verdict of its own, and the collect agent's rule is "failed
-  if stale is yes" rather than "failed if latest_day is older than
-  yesterday". A model comparing dates to "yesterday" is arithmetic nobody
+  `stale: yes|no` verdict, and the collect agent's rule is "failed if stale
+  is yes". A model comparing dates to "yesterday" is arithmetic nobody
   checks, and it returned a passing verdict on both failed nights.
 
 ## [0.3.0] - 2026-08-07
