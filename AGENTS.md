@@ -23,6 +23,7 @@ Consequences you must preserve:
 | The timer is `Persistent=true` | A machine asleep at the scheduled time must run on wake |
 | Derived views read `stats/history/`, never the rolling totals | The rolling window loses its left edge nightly; differencing two snapshots of it reports "what aged out" as "what changed" |
 | Anything from a rolling endpoint gets ingested, not just traffic | `/traffic/popular/*` rolls exactly like `/traffic/clones`. Paths lived only in runs until schema 3, so `prune` destroyed them and the ingest guard — which only knows traffic days — did not object |
+| The settling wait is measured, so it is re-measured | 36h is one account's reading of an undocumented pipeline. `daily_snapshots.jsonl` keeps each fetch's reading of each still-movable day so `catnip settle` can prove the constant still holds; nothing else in catnip can, because max-merge destroys the revision history on ingest |
 
 If a change makes any of those five statements false, it is wrong even if
 the tests pass.
@@ -45,13 +46,20 @@ src/catnip/
                       the durable daily store alone. Pure, offline-testable,
                       and the home of DERIVATIONS — the [?] overlay text
                       lives beside the formula it describes
-  history.py          analysis CSVs -> stats/history/  (never pruned)
+  history.py          analysis CSVs -> stats/history/  (never pruned). Also
+                      logs what each fetch READ for each still-movable day,
+                      before the max-merge destroys the revision history
+  settle.py           `catnip settle` — reads that log back and says whether
+                      GitHub still finishes inside CATNIP_SETTLE_HOURS
   totals.py           runs + history -> stats/totals.json
   ui.py               the curses app: every view, every keybinding. Draws;
                       does not decide what a number means (that is derive.py)
   report.py           `catnip report` — deterministic markdown from derive.py
                       alone. Same store + timeframe = byte-identical output;
-                      the floor the catnip-prowl skill stands on
+                      the floor the catnip-prowl skill stands on. Owns the
+                      report naming rule: `<period>.<stamp>/` while the
+                      window can still be revised, `<period>/` once it
+                      cannot. Use `--locate`, never a glob
   doctor.py           preflight + health checks; `--json` is an agent surface
   prune.py            retention with the data-loss guard
   timer.py            renders and installs the systemd user units

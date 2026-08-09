@@ -63,6 +63,16 @@ DEFAULTS = {
     # Run retention. `catnip prune` deletes run directories older than
     # this; the history store is never pruned.
     "CATNIP_RETAIN_DAYS": "30",
+    # How long after a day closes GitHub is still adding counts to it.
+    # `derive.SETTLE_HOURS_FLOOR` is the measured floor and a lower value
+    # here is ignored; `catnip settle` measures what this account actually
+    # does and says when this needs raising.
+    "CATNIP_SETTLE_HOURS": "36",
+    # How much of the settle measurement to keep. Unlike the store, this
+    # file is a measurement and can be deleted: every day in it is already
+    # in the store at its settled value, so trimming loses the revision
+    # history and nothing else.
+    "CATNIP_SETTLE_LOG_DAYS": "90",
     # systemd timer cadence (OnCalendar= syntax) and jitter.
     "CATNIP_TIMER_ONCALENDAR": "daily",
     "CATNIP_TIMER_RANDOM_DELAY": "1h",
@@ -216,6 +226,16 @@ class Config:
         return self.history_dir / "traffic_daily.json"
 
     @property
+    def daily_snapshots_file(self) -> Path:
+        """Per-fetch readings of each recent day, for `catnip settle`.
+
+        A sibling of `snapshots.jsonl` rather than a column in it: that
+        file is parsed by everything that reads per-run stats today, and
+        this one can be deleted without touching data that cannot be
+        refetched."""
+        return self.history_dir / "daily_snapshots.jsonl"
+
+    @property
     def reports_dir(self) -> Path:
         """Where `catnip report` writes. Under the data directory, not the
         checkout: reports describe private repositories' traffic, and the
@@ -249,6 +269,7 @@ class Config:
             "stats_file": str(self.stats_file),
             "history_dir": str(self.history_dir),
             "history_file": str(self.history_file),
+            "daily_snapshots_file": str(self.daily_snapshots_file),
             "reports_dir": str(self.reports_dir),
             "log_dir": str(self.log_dir),
             "config_file": str(self.source) if self.source else "",

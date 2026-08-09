@@ -25,6 +25,14 @@ extract:
   - tool: catnip-store-status
     pattern: '"schema_version":\s*([0-9]+)'
     store: schema_version
+  # The days catnip measured GitHub still counting at or past the wait every
+  # window rests on. An empty list is the healthy answer and the tool decides
+  # which it is; a model reading the per-day table would be re-deriving the
+  # verdict from the same coarse readings the tool already refused to
+  # over-read.
+  - tool: catnip-settle
+    pattern: '"proven_short":\s*(\[[^\]]*\])'
+    store: settle_proven_short
   - tool: catnip-report-read
     pattern: '([0-9]{4}-[0-9]{2}-[0-9]{2} to [0-9]{4}-[0-9]{2}-[0-9]{2})'
     store: window
@@ -40,6 +48,9 @@ extract:
   - tool: catnip-prowl-dispatch
     pattern: '^dispatched ([0-9]+) brief'
     store: seeds_dispatched
+  - tool: catnip-prowl-reopen
+    pattern: '^re-opened ([0-9]+) cycle'
+    store: cycles_reopened
   # catnip-prowl-record prints text, not JSON, so these are line-anchored.
   - tool: catnip-prowl-record
     pattern: '^cycle ([0-9]{4}-[0-9]{2}-[0-9]{2})$'
@@ -114,6 +125,12 @@ tools:
     mcp:
       server: shells
       tool: catnip_prowl_record
+  - name: catnip-prowl-reopen
+    description: "Queue a re-run of any published cycle whose window the store has since revised"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_prowl_reopen
   - name: catnip-verify
     description: "Assert the analysis CSVs the TUI requires exist and are non-empty"
     type: mcp
@@ -156,3 +173,9 @@ tools:
     mcp:
       server: shells
       tool: catnip_store_status
+  - name: catnip-settle
+    description: "Print how long GitHub kept revising each recent day; proven_short lists days that contradict the configured wait"
+    type: mcp
+    mcp:
+      server: shells
+      tool: catnip_settle

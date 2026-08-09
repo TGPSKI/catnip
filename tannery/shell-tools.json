@@ -23,14 +23,24 @@
     },
     {
       "name": "catnip_store_status",
-      "description": "Print the durable store's status as JSON. settled_day is the newest day GitHub has finished counting - 36 hours behind the newest fetch, because GitHub keeps adding to a day for well over a day after it closes. settled_expected is what a healthy cycle would leave it at right now, and stale is yes|no comparing the two. Read stale; do not compute freshness from dates yourself. latest_day is the raw newest key and is always the fetch's own day, which reads zero.",
-      "command": "bash",
+      "description": "Print the durable store's status as JSON. settled_day is the newest day GitHub has finished counting - settle_hours behind the newest fetch, because GitHub keeps adding to a day for well over a day after it closes. settled_expected is what a healthy cycle would leave it at right now, and stale is yes|no comparing the two. Read stale; do not compute freshness from dates yourself. latest_day is the raw newest key and is always the fetch's own day, which reads zero.",
+      "command": "python3",
       "args": [
-        "-c",
-        "catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['history_file'])\" | xargs -r python3 -c \"import json,sys;from datetime import datetime,timedelta,timezone;d=json.load(open(sys.argv[1]));days=sorted({x for r in d.get('repos',{}).values() for m in ('clones','views') for x in (r.get(m) or {})});f=sorted(d.get('fetches_ingested') or []);t=datetime.strptime(f[-1],'%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc) if f else None;edge=((t-timedelta(hours=36)).date()-timedelta(days=1)).isoformat() if t else None;st=[x for x in days if edge is None or x<=edge];sd=st[-1] if st else None;exp=((datetime.now(timezone.utc)-timedelta(hours=36)).date()-timedelta(days=1)).isoformat();print(json.dumps({'schema_version':d.get('schema_version'),'owner':d.get('owner'),'updated':d.get('updated'),'latest_day':days[-1] if days else None,'settled_day':sd,'settled_expected':exp,'stale':'yes' if (sd is None or sd<exp) else 'no','settle_hours':36,'coverage':d.get('coverage'),'repos':len(d.get('repos',{})),'paths_repos':len(d.get('paths',{}))}))\""
+        "scripts/store-status.py"
       ],
       "timeout_seconds": 60,
       "output_cap_bytes": 4000
+    },
+    {
+      "name": "catnip_settle",
+      "description": "Print how long GitHub actually kept revising each recent day, measured from catnip's own readings, as JSON. verdict.proven_short lists days observed still being counted at or past the configured wait - a non-empty list means every window catnip draws is ending too early and settle_hours must be raised. verdict.unresolved lists days whose change landed inside a gap that straddles the wait; the daily cadence cannot place those, and they are not evidence against it.",
+      "command": "catnip",
+      "args": [
+        "settle",
+        "--json"
+      ],
+      "timeout_seconds": 60,
+      "output_cap_bytes": 20000
     },
     {
       "name": "catnip_report_write",
@@ -55,11 +65,11 @@
     },
     {
       "name": "catnip_report_meta",
-      "description": "Print the newest written report's meta.json (latest_day, written, provenance) - the authority on whether a report exists for the current store.",
-      "command": "bash",
+      "description": "Print the newest written report's paths and meta.json as JSON - the authority on whether a report exists for the current store. A report is named for the period it covers. promoted:true means its window can no longer be revised and the figures are final; promoted:false means a later collection can still change them and the report will be recomputed under a new write stamp.",
+      "command": "catnip",
       "args": [
-        "-c",
-        "d=$(catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['data_dir'])\")/reports; ls -1d \"$d\"/*/ 2>/dev/null | sort | tail -1 | xargs -r -I{} cat {}meta.json 2>/dev/null || echo none"
+        "report",
+        "--locate"
       ],
       "timeout_seconds": 60,
       "output_cap_bytes": 2000
@@ -176,7 +186,7 @@
       "command": "bash",
       "args": [
         "-c",
-        "d=$(catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['data_dir'])\"); latest=$(ls -1d \"$d\"/reports/*/ 2>/dev/null | sort | tail -1); cat \"${latest}prowl.md\" 2>/dev/null || echo none"
+        "p=$(catnip report --locate | python3 -c \"import json,sys;d=json.load(sys.stdin);print(d.get('prowl') or '')\"); [ -n \"$p\" ] && cat \"$p\" 2>/dev/null || echo none"
       ],
       "required": [],
       "timeout_seconds": 30,
@@ -199,6 +209,16 @@
         "cycle": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
       },
       "timeout_seconds": 60,
+      "output_cap_bytes": 4000
+    },
+    {
+      "name": "catnip_prowl_reopen",
+      "description": "Check every published prowl cycle against the store and queue a re-run for any whose window has since been revised. A published finding quotes numbers GitHub was still correcting; report.md notices that and prowl.md cannot, because a finding is prose and a tier rather than a recomputable query. Prints one line per cycle: unchanged, REVISED (a re-run was queued), closed (the window left GitHub's 14-day reach and can never change again), or already (a re-run is queued for this revision). Takes no arguments and is safe to call every cycle.",
+      "command": "python3",
+      "args": [
+        "scripts/prowl-reopen.py"
+      ],
+      "timeout_seconds": 120,
       "output_cap_bytes": 4000
     },
     {

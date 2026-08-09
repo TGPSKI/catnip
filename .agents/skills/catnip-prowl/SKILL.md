@@ -51,9 +51,15 @@ prototyping.
 ## Phase 1 — the deterministic floor
 
 ```bash
-catnip report                          # writes <data>/reports/<stamp>/report.md
+catnip report                          # writes <data>/reports/<period>.<stamp>/report.md
 catnip report --stdout                 # or read it without writing
+catnip report --locate                 # where the newest one is, and whether it is final
 ```
+
+`--locate` reports `promoted`. False means a later collection can still
+change the figures and the report will be recomputed under a new write
+stamp; true means its window has left GitHub's 14-day reach and the numbers
+are final.
 
 Read it fully before forming any opinion. It gives you: headline totals
 and change, biggest movers with trend, attribution tiers, account events,

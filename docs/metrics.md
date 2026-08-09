@@ -14,6 +14,8 @@ stats/
   history/
     traffic_daily.json  the permanent daily series — never pruned
     snapshots.jsonl     append-only, one line per (run, repo)
+    daily_snapshots.jsonl  each fetch's reading of each still-movable day,
+                        before the merge. Bounded by CATNIP_SETTLE_LOG_DAYS
 ```
 
 Run IDs are UTC stamps (`20260805T031722Z`), so lexical order is
@@ -238,11 +240,63 @@ GitHub documents none of this. The API reference gives the window ("the last
 of the beginning of the day or week"); the traffic page says only that "full
 clones and visitor information update hourly". Read plainly that implies a
 closed day is complete within the hour, and the table above says otherwise.
-So 36 hours is a measurement, not a specification — see
-[#5](https://github.com/TGPSKI/catnip/issues/5) for making it self-checking.
+So 36 hours is a measurement, not a specification.
 `CATNIP_SETTLE_HOURS` raises the wait for an account that settles slower;
 it cannot lower it below the measured floor, because a short wait costs
 nothing visible and publishes part of a day as all of it.
+
+### Re-measuring it: `catnip settle`
+
+The table above was derivable once, by accident: three run directories
+survived `catnip prune`, and their raw payloads held the same day at
+different values. The store cannot answer the question — max-merge per
+(repo, metric, day) keeps the settled value and discards every
+intermediate one.
+
+So `history.py` writes each fetch's reading of each still-movable day to
+`stats/history/daily_snapshots.jsonl` before merging it, and `catnip
+settle` reads them back:
+
+```
+  day          reads repos  clones         views          moving at  final by
+  2026-08-05       4    35  194 -> 417     105 -> 320           12h        30h
+  2026-08-06       4    35  14 -> 33       22 -> 68             12h        66h
+```
+
+The first row is the table above, re-derived from a different input by
+different code: 194/417 clones is 47%, 105/320 views is 33%, at 12h, final
+by 30h. The second is what a missed collection costs — no run on
+2026-08-08 left a 53-hour gap, so that day's change places no tighter than
+"after 12h, done by 66h".
+
+Four rules keep it honest.
+
+- **The same repos in every reading.** A day's totals are summed over the
+  repos present in *all* of its readings. A repo added or dropped between
+  fetches otherwise moves the total on its own, and that movement would
+  read as GitHub still counting.
+- **A repo-day with no traffic is written as a zero.** GitHub returns no
+  row for one, so a repo going from nothing to its full count — most of the
+  late arrival, concentrated on repos pushed that day — is absent from the
+  earlier reading rather than zero in it. The zeros are filled for the
+  repos each fetch covered, which also stops a newly collected repo from
+  reading as a revision.
+- **A change proves only the age of the reading it followed.** On a daily
+  timer the readings of one day sit ~24h apart, so a value differing
+  between a 19h read and a 43h read proves the day was unfinished at 19h
+  and final by 43h, and says nothing about 36h. Both bounds are reported
+  and the day classifies as `unresolved`; contradicting the wait requires
+  the lower bound to reach it. A second daily collection would place it.
+- **A day still open is not evidence.** The fetch-day bucket reads as a
+  flat zero, so readings taken before a day closed are excluded from both
+  bounds — otherwise every day contradicts every wait.
+
+`catnip settle` exits non-zero only on a proven contradiction; `catnip
+doctor` carries the same verdict as a `settling` check. The log is bounded
+by `CATNIP_SETTLE_LOG_DAYS` (90) rather than by `catnip prune`, which now
+keeps runs because their days may still be revised. It is the one artifact
+catnip will delete: every day in it is in the store at its settled value,
+so trimming loses only how long that took.
 
 `derive.settled_day` is the newest day whose own UTC close is `SETTLE_HOURS`
 behind the newest fetch. It is where every window ends, what the TUI header
@@ -263,10 +317,44 @@ Two properties worth stating, because both were bugs first:
 
 Because a day can be corrected after it was reported, two consumers carry
 the consequence. `catnip report` records a `window_digest` of the numbers it
-stated and rewrites itself when the store no longer matches. `catnip prune`
+stated and recomputes when the store no longer matches. `catnip prune`
 keeps any run whose days may still be revised, ingested or not: the store
 holds the merged result, but only the run directory holds what a particular
 fetch saw, and `history --rebuild` reconstructs from surviving runs alone.
+
+### Which copy of a report is the answer
+
+A report is named for the period it covers, and each recomputation is
+written beside the last:
+
+```
+reports/2026-08-05-2w.20260807T031722Z/   provisional
+reports/2026-08-05-2w.20260809T031519Z/   provisional, recomputed
+reports/2026-08-05-2w/                    settled
+```
+
+Promotion is **not** keyed on the settling wait. `settled_day` is already
+`settle_hours` behind the newest fetch, so every day a report covers is
+older than the wait the moment it is written, and a rule on the wait alone
+would promote everything immediately. It is keyed on GitHub's 14-day
+window: past that no fetch can return the day, so the store's value is
+final by construction rather than by measurement. That takes about two
+weeks, so the sweep runs on every `catnip report` invocation.
+
+`meta.json` records `first_written` and `last_recomputed` separately, and a
+recomputed report carries a `first written` row in its provenance table.
+`catnip report --locate` resolves the paths; nothing outside `report.py`
+should reproduce the naming rule.
+
+### And the inference beside it
+
+`prowl.md` quotes measured figures out of the same store and cannot notice
+when they move: a finding is prose and a tier, not a recomputable query.
+The tannery records each published cycle's window digest and re-runs the
+cycle when it differs — `catnip report --digest --end <day>` recomputes it
+over the same days, so it fires on a revision rather than on a new day
+arriving. A cycle closes permanently once its window leaves the 14-day
+window, the same horizon report promotion uses.
 
 Collecting more often does not shorten any of this. A day closes at 00:00
 UTC, so a fetch on the following day reads it at most 24h old however many

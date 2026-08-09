@@ -23,7 +23,9 @@ data_dir="$(catnip config --json | python3 -c "import json,sys;print(json.load(s
 # published prowl.md: the recorder sends this document to the editor queue,
 # and the guarded edit-publish is the only writer of the reports dir.
 out=".state/prowl/${cycle}.assembled.md"
-prev_published="$(ls -1d "${data_dir}"/reports/*/ 2>/dev/null | sort | tail -1)prowl.md"
+# catnip owns the naming: reports are keyed on the period they cover, and a
+# promoted one sorts before its own superseded stamped siblings.
+prev_published="$(catnip report --locate | python3 -c "import json,sys;print(json.load(sys.stdin).get('prowl') or '/dev/null')")"
 # The config's CATNIP_OWNER is blank in auto mode; the store records who it
 # actually fetched.
 owner="$(python3 -c "import json;print(json.load(open('${data_dir}/stats/history/traffic_daily.json')).get('owner') or 'this account')")"
@@ -118,16 +120,40 @@ printf '<!-- counts measured=%s inferred=%s speculative=%s -->\n' "$m" "$i" "$s"
 printf 'wrote %s\n' "$out"
 printf '  %-12s %s\n' measured "$m" inferred "$i" speculative "$s" refuted "$r"
 
+# The digest of the days this cycle rests on, recorded the same way the
+# report records its own. A finding is prose plus a tier, not a recomputable
+# query, so this is the only thing that can tell a later check that the
+# numbers underneath a published claim have moved. Pinned to the window's
+# end day: the trailing window moves on, and comparing against it would fire
+# on a new day arriving rather than on an old one being revised.
+digest_json="$(catnip report --digest 2>/dev/null || echo '{}')"
+read -r window_digest window_end < <(printf '%s' "$digest_json" | python3 -c \
+  "import json,sys;d=json.load(sys.stdin);print(d.get('window_digest') or '-', d.get('end') or '-')")
+
 # The writer's state file is one run's outcome; this is the cycle's
 # aggregate, written deterministically on every publish.
 cat > .state/prowl-cycle.json <<EOF
 {
   "cycle": "${cycle}",
   "window": "${window}",
+  "window_end": "${window_end}",
+  "window_digest": "${window_digest}",
   "findings": {"measured": ${m}, "inferred": ${i}, "speculative": ${s}},
   "corrections": ${c},
   "refuted": ${r},
   "watch": ${w},
   "published": "${out}"
+}
+EOF
+
+# Per cycle, because prowl-cycle.json holds only the newest and every
+# published cycle stays re-openable until its window leaves GitHub's reach.
+cat > ".state/prowl/${cycle}.digest" <<EOF
+{
+  "cycle": "${cycle}",
+  "timeframe": "2w",
+  "window_end": "${window_end}",
+  "window_digest": "${window_digest}",
+  "recorded": "$(date -u +%Y%m%dT%H%M%SZ)"
 }
 EOF

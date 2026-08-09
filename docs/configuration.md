@@ -89,6 +89,8 @@ off stats.
 | Key | Default | Notes |
 |---|---|---|
 | `CATNIP_RETAIN_DAYS` | `30` | How long run directories survive `catnip prune`. |
+| `CATNIP_SETTLE_HOURS` | `36` | How long after a day closes GitHub is still adding counts to it. No window ends inside this wait. 36 is a measured floor; a lower value is ignored. `catnip settle` measures what this account actually does. |
+| `CATNIP_SETTLE_LOG_DAYS` | `90` | How many days of settle readings to keep in `stats/history/daily_snapshots.jsonl`. That log is a measurement, not a record: every day in it is already in the store at its settled value. |
 | `CATNIP_TIMER_ONCALENDAR` | `daily` | systemd `OnCalendar=` syntax. |
 | `CATNIP_TIMER_RANDOM_DELAY` | `1h` | Jitter, so you are not hitting the API at the same second as everyone else. |
 

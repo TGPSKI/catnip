@@ -40,7 +40,17 @@ CATNIP_RETAIN_DAYS=30
 # a third of its final views. No window ends inside this wait, so raising it
 # moves every window further back. 36 is a floor — a lower value is ignored,
 # because a short wait publishes part of a day as all of it.
-# CATNIP_SETTLE_HOURS=36
+# `catnip settle` measures what this account actually does and says when
+# this needs raising; `catnip doctor` warns when the readings contradict it.
+CATNIP_SETTLE_HOURS=36
+
+# How many days of settle readings to keep in
+# stats/history/daily_snapshots.jsonl. That file grows per fetch per repo
+# per day and is a measurement, not a record: every day in it is already in
+# the store at its settled value, so trimming loses only the history of how
+# long that took. `catnip prune` deliberately does not bound it — prune now
+# keeps runs whose days may still be revised.
+CATNIP_SETTLE_LOG_DAYS=90
 
 # Timer cadence (systemd OnCalendar syntax) and jitter. Daily is the
 # floor that keeps the 14-day traffic window from developing holes.

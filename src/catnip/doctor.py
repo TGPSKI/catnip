@@ -23,6 +23,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from catnip import settle
 from catnip.config import Config, ConfigError, candidate_paths, run_dirs
 
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
@@ -285,6 +286,33 @@ def check_data(rep: Report, cfg: Config):
         rep.add("totals", PASS, f"{cfg.stats_file} ({age:.0f}h old)")
     else:
         rep.add("totals", WARN, "not computed", "Run: catnip totals")
+
+    check_settling(rep, cfg)
+
+
+def check_settling(rep: Report, cfg: Config):
+    """Does the settling wait still match what GitHub actually does?
+
+    Every window catnip draws ends `settle_hours` back, and that number is
+    a measurement of one account on one week — not something GitHub
+    documents or promises. If its pipeline slows down, nothing else here
+    would notice: the store would simply hold smaller numbers for the
+    freshest days and every derived view would report them as the truth.
+    """
+    result = settle.verdict(settle.curves(settle.load(cfg.daily_snapshots_file)))
+    detail = (f"wait {result['settle_hours']}h; {result['days_measured']} day(s) "
+              f"measured, {len(result['confirmed'])} confirmed, "
+              f"{len(result['unresolved'])} unresolved, "
+              f"{len(result['proven_short'])} contradicting")
+    if result["proven_short"]:
+        rep.add("settling", WARN, detail,
+                settle.summary_line(result) + " Full readings: `catnip settle`.")
+    elif not result["days_measured"]:
+        rep.add("settling", PASS, f"wait {result['settle_hours']}h; not measurable yet",
+                "Two readings of the same closed day are the minimum. "
+                "`catnip history` records one per collection.")
+    else:
+        rep.add("settling", PASS, detail)
 
 
 def check_timer(rep: Report):

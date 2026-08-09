@@ -1,3 +1,4 @@
 name: catnip-status
 tools:
   - catnip-store-status
+  - catnip-settle

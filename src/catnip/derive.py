@@ -54,6 +54,39 @@ _STAMP = re.compile(r"^\d{8}T\d{6}Z$")
 #: visible and publishes a third of a day's traffic as the whole of it.
 SETTLE_HOURS_FLOOR = 36
 
+#: How many days back of a fetch's payload are worth recording for the
+#: settle measurement, beyond the wait itself. Three: enough observations
+#: after the wait expires to show a day standing still, without logging the
+#: whole 14-day window every night for days that provably never move again.
+SETTLE_PROBE_MARGIN_DAYS = 3
+
+#: Resolved `CATNIP_SETTLE_HOURS` from the config file. None until asked.
+_CONFIG_SETTLE_HOURS = None
+
+
+def _config_settle_hours():
+    """`CATNIP_SETTLE_HOURS` as the config file resolves it, or "".
+
+    The one thing this module reads besides a store. A knob only the
+    environment honours is a coordinate mismatch: the operator edits the
+    file, `catnip config` shows the new value, and every window keeps
+    using the old one. Resolved once, because `settled_edge` is on the
+    path of every windowed number.
+    """
+    global _CONFIG_SETTLE_HOURS
+    if _CONFIG_SETTLE_HOURS is None:
+        try:
+            from catnip.config import Config, ConfigError
+            try:
+                _CONFIG_SETTLE_HOURS = Config.load().get("CATNIP_SETTLE_HOURS", "")
+            except ConfigError:
+                # A broken config file is `catnip doctor`'s to report. Here
+                # it means one unreadable knob, not an unusable store.
+                _CONFIG_SETTLE_HOURS = ""
+        except ImportError:  # pragma: no cover - derive is importable alone
+            _CONFIG_SETTLE_HOURS = ""
+    return _CONFIG_SETTLE_HOURS
+
 
 def settle_hours():
     """The effective settling wait, in hours.
@@ -61,11 +94,23 @@ def settle_hours():
     Read through a function rather than frozen at import so a test, a shell
     and a long-running TUI all see the same value from the same environment.
     """
-    raw = os.environ.get("CATNIP_SETTLE_HOURS")
+    raw = os.environ.get("CATNIP_SETTLE_HOURS") or _config_settle_hours()
     try:
         return max(SETTLE_HOURS_FLOOR, int(raw))
     except (TypeError, ValueError):
         return SETTLE_HOURS_FLOOR
+
+
+def settle_probe_days(hours=None):
+    """How many days back a fetch records for the settle measurement."""
+    hours = settle_hours() if hours is None else hours
+    return -(-hours // 24) + SETTLE_PROBE_MARGIN_DAYS
+
+#: How many trailing days GitHub's traffic endpoints serve. Documented, for
+#: once: "the last 14 days". A day older than this cannot be requested again
+#: by anyone, which makes it the one horizon past which the store's value is
+#: final by construction rather than by measurement.
+TRAFFIC_WINDOW_DAYS = 14
 
 #: Trailing days per timeframe key. None means "the whole store".
 WINDOW_DAYS = {"1d": 1, "1w": 7, "2w": 14, "all": None, "epoch": None}
@@ -254,6 +299,24 @@ def settled_day(store, fetched=None):
         return days[-1]
     settled = [d for d in days if d <= edge]
     return settled[-1] if settled else None
+
+
+def final_day(now=None):
+    """The newest day no future fetch could revise.
+
+    Deliberately not `settle_hours` behind anything: `settled_day` is
+    already that far behind the newest fetch, so every day a report covers
+    is older than the wait at the moment it is written, and a rule on the
+    wait alone would be vacuous. Past the 14-day window no fetch can
+    return the day at all, so the store's value is final by construction.
+
+    Strictly past, not on the boundary — the endpoints sometimes return a
+    fifteenth bucket. Wall-clock, not the store's newest fetch: a day that
+    fell out of the window while collection was stopped is more final, not
+    less.
+    """
+    now = now or datetime.now(timezone.utc)
+    return (now.date() - timedelta(days=TRAFFIC_WINDOW_DAYS + 1)).isoformat()
 
 
 def window(store, timeframe, end=None):

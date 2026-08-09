@@ -178,6 +178,8 @@ they belong in the runtime, not in a lint every tannery carries a copy of:
 | `scripts/prowl-dispatch.py` | parses SEED blocks, one intake POST per brief |
 | `scripts/prowl-record.py` | parses the analysis blocks, files them, hands to the editor |
 | `scripts/prowl-edit-publish.py` | the only writer of `prowl.md`; refuses changed counts |
+| `scripts/prowl-reopen.py` | queues a re-run of any published cycle whose window was revised |
 | `scripts/store-sweep.py` | every repo with traffic on a given day, straight from the store |
-| `scripts/prowl-publish.sh` | assembles a cycle's `prowl.md`, prints the counts |
+| `scripts/store-status.py` | the store's settled day, coverage and staleness as JSON |
+| `scripts/prowl-publish.sh` | assembles a cycle's `prowl.md`, records its window digest |
 | `scripts/tool-smoke.sh` | execs the read-only tools' real argvs |
