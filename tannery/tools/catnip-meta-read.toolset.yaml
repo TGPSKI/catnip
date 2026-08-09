@@ -3,5 +3,6 @@ tools:
   - catnip-store-status
   - catnip-report-read
   - catnip-prowl-previous
+  - catnip-prowl-reopen
   - catnip-view
   - catnip-store-sweep

@@ -125,7 +125,7 @@ def load_meta(report_dir):
         return {}
 
 
-def window_digest(store, timeframe):
+def window_digest(store, timeframe, end=None):
     """A fingerprint of the numbers a report for `timeframe` would state.
 
     GitHub keeps adding counts to a day for well over a day after it closes,
@@ -139,8 +139,14 @@ def window_digest(store, timeframe):
     This is the answer to "has anything I already said changed?". It covers
     the window's days and every per-repo total in them, so a single repo's
     backfilled day is enough to mark the report stale.
+
+    `end` pins the window to a fixed day instead of the store's current
+    settled edge. Without it the comparison is worthless to anything that
+    recorded a digest earlier: the trailing window has since moved on, so
+    the digest differs because a new day arrived rather than because an
+    old one was revised.
     """
-    days = derive.window(store, timeframe)
+    days = derive.window(store, timeframe, end=end)
     if not days:
         return None
     parts = [",".join(days)]
@@ -679,6 +685,10 @@ def main(argv=None):
                    help="Only run the promotion sweep; write nothing.")
     p.add_argument("--locate", action="store_true",
                    help="Print the newest report's paths and meta as JSON.")
+    p.add_argument("--digest", action="store_true",
+                   help="Print the window digest for the current store as JSON.")
+    p.add_argument("--end", metavar="DAY",
+                   help="With --digest: pin the window to end on this day.")
     args = p.parse_args(argv)
 
     try:
@@ -707,6 +717,24 @@ def main(argv=None):
         return 1
     with cfg.history_file.open(encoding="utf-8") as fh:
         store = json.load(fh)
+
+    if args.digest:
+        days = derive.window(store, args.timeframe, end=args.end)
+        end = args.end or (days[-1] if days else None)
+        final = derive.final_day()
+        json.dump({
+            "timeframe": args.timeframe,
+            "start": days[0] if days else None,
+            "end": end,
+            "days": len(days),
+            "window_digest": window_digest(store, args.timeframe, end=args.end),
+            "final_day": final,
+            # Once true, nothing can move this window again, so anything
+            # holding a digest of it can stop asking.
+            "settled": bool(end) and end <= final,
+        }, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
 
     if not args.stdout:
         ok, reason = guard(reports_dir, store, timeframe=args.timeframe)

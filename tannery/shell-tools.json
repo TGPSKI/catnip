@@ -212,6 +212,16 @@
       "output_cap_bytes": 4000
     },
     {
+      "name": "catnip_prowl_reopen",
+      "description": "Check every published prowl cycle against the store and queue a re-run for any whose window has since been revised. A published finding quotes numbers GitHub was still correcting; report.md notices that and prowl.md cannot, because a finding is prose and a tier rather than a recomputable query. Prints one line per cycle: unchanged, REVISED (a re-run was queued), closed (the window left GitHub's 14-day reach and can never change again), or already (a re-run is queued for this revision). Takes no arguments and is safe to call every cycle.",
+      "command": "python3",
+      "args": [
+        "scripts/prowl-reopen.py"
+      ],
+      "timeout_seconds": 120,
+      "output_cap_bytes": 4000
+    },
+    {
       "name": "write_state",
       "description": "Write content to a .state/ file path",
       "command": "bash",

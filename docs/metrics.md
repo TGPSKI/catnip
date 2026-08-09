@@ -346,6 +346,16 @@ recomputed report carries a `first written` row in its provenance table.
 `catnip report --locate` resolves the paths; nothing outside `report.py`
 should reproduce the naming rule.
 
+### And the inference beside it
+
+`prowl.md` quotes measured figures out of the same store and cannot notice
+when they move: a finding is prose and a tier, not a recomputable query.
+The tannery records each published cycle's window digest and re-runs the
+cycle when it differs — `catnip report --digest --end <day>` recomputes it
+over the same days, so it fires on a revision rather than on a new day
+arriving. A cycle closes permanently once its window leaves the 14-day
+window, the same horizon report promotion uses.
+
 Collecting more often does not shorten any of this. A day closes at 00:00
 UTC, so a fetch on the following day reads it at most 24h old however many
 times it runs — the wait is GitHub's pipeline, not a sampling rate. A second

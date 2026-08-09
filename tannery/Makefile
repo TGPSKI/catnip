@@ -1,4 +1,4 @@
-.PHONY: all validate serve smoke-tools run-collect run-report run-prowl run-prowl-write clean
+.PHONY: all validate serve smoke-tools run-collect run-report run-prowl run-prowl-write run-reopen clean
 
 all: validate
 
@@ -22,6 +22,9 @@ run-collect: ## run the collect agent once, now
 
 run-report: ## run the report agent once, now
 	leather run --config config.yaml agents/catnip-report.agent.md
+
+run-reopen: ## report which published cycles the store has since revised (queues nothing)
+	@python3 scripts/prowl-reopen.py --dry-run
 
 run-meta: ## size the cycle and seed analyst briefs, now (needs serve up for intake)
 	leather run --config config.yaml agents/catnip-prowl-meta.agent.md

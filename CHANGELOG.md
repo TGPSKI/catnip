@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doctor` carries the same verdict as a `settling` check.
 - **`CATNIP_SETTLE_LOG_DAYS`** (90) bounds that log. `catnip prune` cannot,
   because it now keeps runs whose days may still be revised.
+- **The tannery re-opens a prowl cycle whose window was revised.**
+  `prowl-publish.sh` records the cycle's window digest beside its tier
+  counts, and `scripts/prowl-reopen.py` recomputes it over the same days and
+  queues one analyst brief when it differs. `report.md` already noticed
+  this; `prowl.md` could not, because a finding is prose and a tier rather
+  than a recomputable query — and `measured` is both the strongest claim the
+  pipeline makes and the one most exposed, since the freshest days are the
+  least settled. A cycle is closed permanently once its window leaves
+  GitHub's 14-day reach, and a given revision queues one re-run.
+- **`catnip report --digest`** prints the window digest for the current
+  store. `--end` pins the window to a fixed day, which is what makes a
+  digest recorded earlier comparable at all.
 
 ### Changed
 

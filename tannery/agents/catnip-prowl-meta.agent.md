@@ -27,10 +27,15 @@ Three turns: gather, dispatch, record. The dispatch and state tools only
 become available in their own turns.
 
 ---
-Read the store's status, the deterministic report, and the previous cycle's
-prowl. Then the attribution, audience and deltas views - one read each - and
-catnip-store-sweep once on two or three mid-window dates. That is the whole
-gather: sizing a cycle needs no derivations and no per-repo series.
+Call catnip-prowl-reopen first. It queues a re-run of any already-published
+cycle whose window the store has since revised - a published measured claim
+quotes numbers GitHub was still correcting, and nothing else notices. Those
+re-runs are separate from this cycle: they need no seed from you.
+
+Then read the store's status, the deterministic report, and the previous
+cycle's prowl. Then the attribution, audience and deltas views - one read
+each - and catnip-store-sweep once on two or three mid-window dates. That is
+the whole gather: sizing a cycle needs no derivations and no per-repo series.
 Investigating is the analyst's job.
 
 Then write the candidate list and nothing else: one line per phenomenon
@@ -66,9 +71,10 @@ require_tool: [write_state]
 Write this to .state/catnip-prowl-meta.json with write_state, on failure as
 well as success:
 
-cycle:   {{settled_day}}
-window:  {{window}}
-seeds:   {{seeds_dispatched}} (write the literal 0 when nothing was dispatched)
+cycle:    {{settled_day}}
+window:   {{window}}
+seeds:    {{seeds_dispatched}} (write the literal 0 when nothing was dispatched)
+reopened: {{cycles_reopened}}
 action:  success | failed
 reason:  <one sentence naming what sized the cycle>
 
