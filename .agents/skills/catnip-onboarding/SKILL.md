@@ -1,10 +1,10 @@
 ---
 name: catnip-onboarding
-description: "Configure catnip for a new user, from nothing installed to collecting on a timer. Four verified phases: prerequisites and credentials, configuration, first collection, automation. Use when someone says catnip is not set up, asks how to start collecting GitHub traffic data, or wants the timer running."
+description: "Configure catnip for a new user, from nothing installed to collecting on a schedule. Four verified phases: prerequisites and credentials, configuration, first collection, automation via systemd timer, cron, or a leather tannery. Use when someone says catnip is not set up, asks how to start collecting GitHub traffic data, or wants the timer or the tannery running."
 metadata:
   author: catnip
-  version: "1.0"
-compatibility: "bash, python3 >= 3.10, gh CLI. systemd or cron for phase 4."
+  version: "1.1"
+compatibility: "bash, python3 >= 3.10, gh CLI. systemd, cron, or leather + an OpenAI-compatible endpoint for phase 4."
 ---
 
 # catnip Onboarding
@@ -22,7 +22,7 @@ what you remember doing earlier in the conversation.
 GitHub's `/traffic/*` endpoints serve a rolling ~14-day window and
 nothing older. Every day between "the user wanted this" and "the timer is
 running" is a day permanently lost. So: get collection working before
-making it pretty, and get the timer installed in the same session.
+making it pretty, and get a schedule installed in the same session.
 
 The other reason for the order: traffic requires **push access** to each
 repository. A token without it fetches metadata perfectly and returns no
@@ -68,8 +68,18 @@ catnip runs              # collected runs, if any
 | `paths.config_file` is `""` | Phase 2 incomplete — no config file, running on defaults |
 | `runs` check has `"status": "WARN"` and says `none under` | Phase 3 incomplete |
 | `analysis` or `history store` check is not `PASS` | Phase 3 incomplete — collected but not usable |
-| `timer` check says `not enabled` | Phase 4 incomplete |
+| `timer` check says `not enabled` | Phase 4 incomplete — **unless a leather tannery is scheduling collection**, which leaves this check at WARN permanently |
 | Every check `PASS` | Onboarding complete — go to Verification |
+
+The one ambiguous reading is the `timer` check: a machine automated by
+the tannery (Phase 4, Step 6) never enables `catnip.timer`. Before
+routing to Phase 4 on that check alone, look for a scheduler that is not
+systemd's:
+
+```bash
+systemctl --user is-active catnip-tannery.service 2>/dev/null
+crontab -l 2>/dev/null | grep catnip
+```
 
 ## Determine Phase
 
@@ -81,7 +91,7 @@ phase assumes the earlier ones hold.
 | `gh` missing, unauthenticated, or traffic denied | **Phase 1** — `references/phase-01-prerequisites.md` |
 | Credentials fine, no config file | **Phase 2** — `references/phase-02-configuration.md` |
 | Config exists, no usable run | **Phase 3** — `references/phase-03-first-collection.md` |
-| Runs exist, no timer | **Phase 4** — `references/phase-04-automation.md` |
+| Runs exist, nothing scheduling them | **Phase 4** — `references/phase-04-automation.md` |
 | All checks pass | **Verification** (below) |
 
 ## Route to Phase
@@ -129,8 +139,8 @@ verification assumes only its predecessors ran.
 When every phase is done, confirm the whole thing end to end:
 
 ```bash
-catnip doctor          # every check PASS
-catnip timer status    # next elapse is in the future
+catnip doctor          # every check PASS (timer WARN is expected under a tannery)
+catnip timer status    # next elapse is in the future (tannery: Phase 4, Step 8)
 catnip view traffic    # real numbers, headlessly
 ```
 
@@ -151,4 +161,4 @@ Then tell the user, concretely:
 | 1 | @references/phase-01-prerequisites.md | A `gh` login that can read traffic |
 | 2 | @references/phase-02-configuration.md | A config file with the right owner and selection |
 | 3 | @references/phase-03-first-collection.md | One complete, verified run |
-| 4 | @references/phase-04-automation.md | A timer that will still be collecting next month |
+| 4 | @references/phase-04-automation.md | A schedule — timer, cron, or leather tannery — still collecting next month |
