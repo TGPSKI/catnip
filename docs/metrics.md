@@ -238,11 +238,66 @@ GitHub documents none of this. The API reference gives the window ("the last
 of the beginning of the day or week"); the traffic page says only that "full
 clones and visitor information update hourly". Read plainly that implies a
 closed day is complete within the hour, and the table above says otherwise.
-So 36 hours is a measurement, not a specification — see
-[#5](https://github.com/TGPSKI/catnip/issues/5) for making it self-checking.
+So 36 hours is a measurement, not a specification.
 `CATNIP_SETTLE_HOURS` raises the wait for an account that settles slower;
 it cannot lower it below the measured floor, because a short wait costs
 nothing visible and publishes part of a day as all of it.
+
+### Re-measuring it: `catnip settle`
+
+The table above was derivable exactly once, by accident: three run
+directories happened to survive `catnip prune`, and comparing their raw
+payloads showed the same day at different values. The store cannot answer
+the question at all — merges are element-wise max per (repo, metric, day),
+so ingest keeps the settled value and destroys every intermediate one.
+
+So `history.py` writes each fetch's reading of each still-movable day to
+`stats/history/daily_snapshots.jsonl` *before* merging it, and `catnip
+settle` reads them back:
+
+```
+  day          reads repos  clones         views          moving at  final by
+  2026-08-05       4    35  194 -> 417     105 -> 320           12h        30h
+  2026-08-06       4    35  14 -> 33       22 -> 68             12h        66h
+```
+
+That first row is the table above, re-derived from a different input by
+different code: 194/417 clones is 47% and 105/320 views is 33%, at 12h,
+final by 30h. The second row is what a missed collection costs — no run on
+2026-08-08 left a 53-hour gap, so that day's change cannot be placed any
+tighter than "after 12h, done by 66h".
+
+Four things make this honest rather than decorative.
+
+- **The same repos in every reading.** A day's totals are summed over the
+  repos present in *all* of its readings. A repo added or dropped between
+  fetches otherwise moves the total on its own, and that movement would
+  read as GitHub still counting.
+- **A repo-day with no traffic is written as a zero.** GitHub returns no
+  row at all for one, so a repo going from nothing to its full count — most
+  of the late arrival, concentrated on repos pushed that day — is simply
+  *absent* from the earlier reading. Reading absence as absence loses
+  exactly the movement worth catching. The zeros are filled for the repos
+  each fetch actually covered, which is also what stops a newly collected
+  repo from reading as a revision.
+- **A change proves only the age of the reading it followed.** On a daily
+  timer the readings of one day sit ~24h apart, so a value that differs
+  between a 19h read and a 43h read changed somewhere in between. That
+  proves the day was unfinished at 19h and final by 43h; it says nothing
+  about 36h. `catnip settle` reports both bounds and classifies the day as
+  *unresolved* — a second daily collection would place the change.
+  Contradicting the wait requires the lower bound to reach it.
+- **A day still open is not evidence.** The fetch-day bucket reads as a
+  flat zero; readings taken before a day closed are excluded from both
+  bounds, or every day would contradict every wait.
+
+`catnip settle` exits non-zero only on a proven contradiction, and `catnip
+doctor` carries the same verdict as a `settling` check. The log is bounded
+by `CATNIP_SETTLE_LOG_DAYS` (90 by default) rather than by `catnip prune`,
+which now keeps runs precisely because their days may still be revised. It
+is also the one artifact catnip will delete: every day in it is in the
+store at its settled value, so trimming loses the record of how long that
+took and nothing else.
 
 `derive.settled_day` is the newest day whose own UTC close is `SETTLE_HOURS`
 behind the newest fetch. It is where every window ends, what the TUI header

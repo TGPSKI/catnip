@@ -52,6 +52,15 @@ CATNIP_FETCH_ISSUES={issues}
 # GitHub still serves.
 CATNIP_RETAIN_DAYS={retain}
 
+# How long GitHub keeps adding counts to a day after it closes. No window
+# ends inside this wait. 36 is a measured floor and a lower value is
+# ignored; `catnip settle` says when this account needs it raised.
+CATNIP_SETTLE_HOURS={settle_hours}
+
+# How many days of settle readings to keep. That log is a measurement and
+# safe to trim: every day in it is in the store at its settled value.
+CATNIP_SETTLE_LOG_DAYS={settle_log_days}
+
 # Timer cadence (systemd OnCalendar syntax) and jitter. Daily is the
 # floor that keeps the 14-day traffic window from developing holes.
 CATNIP_TIMER_ONCALENDAR={oncalendar}
@@ -147,6 +156,8 @@ def main(argv=None):
         events=DEFAULTS["CATNIP_FETCH_EVENTS"],
         issues=DEFAULTS["CATNIP_FETCH_ISSUES"],
         retain=retain,
+        settle_hours=DEFAULTS["CATNIP_SETTLE_HOURS"],
+        settle_log_days=DEFAULTS["CATNIP_SETTLE_LOG_DAYS"],
         oncalendar=oncalendar,
         random_delay=DEFAULTS["CATNIP_TIMER_RANDOM_DELAY"],
     )

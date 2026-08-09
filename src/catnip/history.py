@@ -10,6 +10,8 @@ therefore the one artifact catnip never deletes:
   <data>/stats/history/traffic_daily.json  merged per-repo daily series
                                            (atomic rewrite per ingest)
   <data>/stats/history/snapshots.jsonl     append-only, one line per (run, repo)
+  <data>/stats/history/daily_snapshots.jsonl  what each fetch read for each
+                                           recent day, before the merge
 
 Merge rule: element-wise max per (repo, metric, date) across snapshots.
 GitHub revises recent days upward as its pipeline settles, so max is the
@@ -28,9 +30,10 @@ import csv
 import json
 import sys
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from catnip import derive
 from catnip.config import Config, ConfigError
 from catnip.config import run_dirs as list_fetch_dirs
 
@@ -73,7 +76,15 @@ def safe_int(val, default=0):
 
 def merge_fetch(store, fetch_dir):
     """Max-merge one fetch dir's traffic series into the store. Returns the
-    number of (repo, metric, day) points seen."""
+    number of (repo, metric, day) points seen.
+
+    The merge is element-wise max, so it keeps the settled value and
+    destroys the revision history: afterwards the store knows what a day
+    ended at and nothing about how long it took to get there. That is the
+    right shape for every question except whether the settling wait is
+    still true, which is what `probe_readings` preserves from the same
+    CSV before this runs.
+    """
     points = 0
     for row in read_csv_rows(fetch_dir / "analysis" / "github_traffic_timeseries.csv"):
         repo = row.get("repo_name", "")
@@ -88,6 +99,122 @@ def merge_fetch(store, fetch_dir):
                      else [max(prev[0], count), max(prev[1], uniques)])
         points += 1
     return points
+
+
+def probe_window(fetch_id):
+    """The days a fetch records for the settle measurement, oldest first.
+
+    Bounded because the log grows per fetch per repo per day and the days
+    beyond it never move: `settle_probe_days` covers the wait plus enough
+    days after it to watch a day stand still. A day still changing at the
+    far edge of this window is itself the measurement saying the window —
+    and the wait — is too short.
+    """
+    fetched = derive.fetch_time(fetch_id)
+    if fetched is None:
+        return []
+    last = fetched.date()
+    span = derive.settle_probe_days()
+    return [(last - timedelta(days=n)).isoformat() for n in range(span, -1, -1)]
+
+
+def probe_readings(fetch_dir):
+    """What this fetch read for each still-movable day: {day: {repo: {...}}}.
+
+    Zeros are written out explicitly, and that is the whole subtlety.
+    GitHub returns no row at all for a repo-day with no traffic, so a repo
+    that went from nothing to its full count — which the original
+    measurement found was most of the late arrival, concentrated on repos
+    pushed that day — is simply absent from the earlier reading. Treating
+    absence as absence loses exactly the movement worth catching, and
+    treating it as zero across a repo the fetch never collected would
+    invent movement when the account gains a repo.
+
+    So the zeros are filled for the repos THIS fetch covered, taken as the
+    repos with any row anywhere in its window. A repo silent for all 14
+    days is not covered and contributes nothing either way.
+    """
+    days = probe_window(fetch_dir.name)
+    if not days:
+        return {}
+    window = set(days)
+    covered = set()
+    seen = {}
+    for row in read_csv_rows(fetch_dir / "analysis" / "github_traffic_timeseries.csv"):
+        repo = row.get("repo_name", "")
+        metric = row.get("metric", "")
+        day = row.get("timestamp", "")[:10]
+        if not repo or metric not in ("clones", "views") or not day:
+            continue
+        covered.add(repo)
+        if day in window:
+            seen.setdefault(day, {}).setdefault(repo, {})[metric] = [
+                safe_int(row.get("count")), safe_int(row.get("uniques"))]
+    if not covered:
+        return {}
+    return {day: {repo: seen.get(day, {}).get(repo, {}) for repo in covered}
+            for day in days}
+
+
+def append_daily_snapshots(path, fetch_id, readings):
+    """Append one line per (fetch, repo, day) and return how many.
+
+    Both metrics ride on one line rather than one line per (fetch, repo,
+    day, metric): the key is still unique, the file is half the size, and
+    the value shape is the store's own, so a reader that knows one knows
+    the other.
+    """
+    if path is None or not readings:
+        return 0
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with path.open("a", encoding="utf-8") as fh:
+        for day in sorted(readings):
+            for repo in sorted(readings[day]):
+                metrics = readings[day][repo]
+                fh.write(json.dumps({
+                    "fetch": fetch_id, "day": day, "repo": repo,
+                    "clones": metrics.get("clones", [0, 0]),
+                    "views": metrics.get("views", [0, 0]),
+                }, sort_keys=True) + "\n")
+                written += 1
+    return written
+
+
+def trim_daily_snapshots(path, retain_days, newest_day=None):
+    """Drop readings of days older than `retain_days`. Returns how many.
+
+    This file has to be bounded by something other than `catnip prune`,
+    which now keeps runs precisely because their days may still be revised.
+    It is also the one catnip artifact that is safe to trim: every day in
+    it is in the store at its settled value, so what is lost is the record
+    of how long that took, for days long past caring.
+    """
+    path = Path(path)
+    if not path.is_file() or retain_days <= 0:
+        return 0
+    newest_day = newest_day or datetime.now(timezone.utc).date().isoformat()
+    cutoff = (date.fromisoformat(newest_day) - timedelta(days=retain_days)).isoformat()
+    kept, dropped = [], 0
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                day = json.loads(line).get("day", "")
+            except json.JSONDecodeError:
+                dropped += 1
+                continue
+            if day and day < cutoff:
+                dropped += 1
+            else:
+                kept.append(line)
+    if not dropped:
+        return 0
+    tmp = path.with_suffix(".jsonl.tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        fh.writelines(kept)
+    tmp.replace(path)
+    return dropped
 
 
 def merge_referrers(store, fetch_dir, day):
@@ -254,11 +381,12 @@ def append_snapshots(jsonl_path, fetch_dir):
     return len(rows)
 
 
-def ingest(runs_dir, history_dir, owner, rebuild=False):
+def ingest(runs_dir, history_dir, owner, rebuild=False, settle_log_days=90):
     """Merge every not-yet-ingested run under runs_dir into the store."""
     runs_dir, history_dir = Path(runs_dir), Path(history_dir)
     store_path = history_dir / "traffic_daily.json"
     jsonl_path = history_dir / "snapshots.jsonl"
+    daily_path = history_dir / "daily_snapshots.jsonl"
 
     store = None if rebuild else load_json(store_path)
     if not isinstance(store, dict) or "repos" not in store:
@@ -267,6 +395,8 @@ def ingest(runs_dir, history_dir, owner, rebuild=False):
                  "referrers": {}, "events": {}}
         if rebuild and jsonl_path.exists():
             jsonl_path.unlink()
+        if rebuild and daily_path.exists():
+            daily_path.unlink()
     store.setdefault("owner", owner)
     # An existing version-1 store is upgraded in place by gaining the new
     # sections, never by being rewritten: the days already in it are the
@@ -297,9 +427,24 @@ def ingest(runs_dir, history_dir, owner, rebuild=False):
         store.setdefault("events", {})
         store.setdefault("paths", {})
 
-    if not new_dirs and not backfill:
+    # The settle log arrived after the store did, and every surviving run
+    # directory holds a reading the store has already max-merged away. One
+    # pass over them is the difference between an operator being able to
+    # measure the wait today and having to wait three collections for a
+    # second reading of the same day.
+    settle_backfill = []
+    if not daily_path.exists():
+        settle_backfill = [d for d in list_fetch_dirs(runs_dir)
+                           if d.name in ingested
+                           and (d / "analysis" / "github_traffic_timeseries.csv").is_file()]
+
+    if not new_dirs and not backfill and not settle_backfill:
         print(f"Nothing to ingest ({len(ingested)} runs already in store).")
         return store
+
+    for fetch_dir in settle_backfill:
+        n = append_daily_snapshots(daily_path, fetch_dir.name, probe_readings(fetch_dir))
+        print(f"  Backfilled settle readings from {fetch_dir.name}: {n} lines")
 
     for fetch_dir in backfill:
         day = f"{fetch_dir.name[:4]}-{fetch_dir.name[4:6]}-{fetch_dir.name[6:8]}"
@@ -310,6 +455,10 @@ def ingest(runs_dir, history_dir, owner, rebuild=False):
               f"{paths} path rows, {rel} releases, {push} commit-days")
 
     for fetch_dir in new_dirs:
+        # Before the merge, not after: max-merge is what destroys the
+        # reading this preserves.
+        readings = append_daily_snapshots(daily_path, fetch_dir.name,
+                                          probe_readings(fetch_dir))
         points = merge_fetch(store, fetch_dir)
         day = f"{fetch_dir.name[:4]}-{fetch_dir.name[4:6]}-{fetch_dir.name[6:8]}"
         refs = merge_referrers(store, fetch_dir, day)
@@ -318,8 +467,17 @@ def ingest(runs_dir, history_dir, owner, rebuild=False):
         snaps = append_snapshots(jsonl_path, fetch_dir)
         ingested.add(fetch_dir.name)
         print(f"  Ingested {fetch_dir.name}: {points} series points, {snaps} snapshots, "
-              f"{refs} referrer rows, {paths} path rows, {rel} new releases, "
-              f"{push} commit-days")
+              f"{readings} settle readings, {refs} referrer rows, {paths} path rows, "
+              f"{rel} new releases, {push} commit-days")
+
+    dropped = trim_daily_snapshots(daily_path, settle_log_days)
+    if dropped:
+        print(f"  Trimmed {dropped} settle reading(s) older than {settle_log_days}d")
+
+    if not new_dirs and not backfill:
+        # A settle-only backfill touched no store section; rewriting the
+        # store to bump `updated` would claim an ingest that did not happen.
+        return store
 
     latest = max(new_dirs or backfill, key=lambda d: d.name)
     store["stars_by_month"] = events_by_month(latest, "github_stargazer_events.csv", "starred_at")
@@ -357,10 +515,12 @@ def main(argv=None):
         runs_dir = args.runs_dir or cfg.runs_dir
         history_dir = args.history_dir or cfg.history_dir
         owner = args.owner or cfg.values.get("CATNIP_OWNER") or ""
+        settle_log_days = cfg.integer("CATNIP_SETTLE_LOG_DAYS")
     except ConfigError as exc:
         print(f"catnip: config error: {exc}", file=sys.stderr)
         return 2
-    ingest(runs_dir, history_dir, owner, rebuild=args.rebuild)
+    ingest(runs_dir, history_dir, owner, rebuild=args.rebuild,
+           settle_log_days=settle_log_days)
     return 0
 
 

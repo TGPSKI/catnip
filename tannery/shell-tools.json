@@ -23,14 +23,24 @@
     },
     {
       "name": "catnip_store_status",
-      "description": "Print the durable store's status as JSON. settled_day is the newest day GitHub has finished counting - 36 hours behind the newest fetch, because GitHub keeps adding to a day for well over a day after it closes. settled_expected is what a healthy cycle would leave it at right now, and stale is yes|no comparing the two. Read stale; do not compute freshness from dates yourself. latest_day is the raw newest key and is always the fetch's own day, which reads zero.",
-      "command": "bash",
+      "description": "Print the durable store's status as JSON. settled_day is the newest day GitHub has finished counting - settle_hours behind the newest fetch, because GitHub keeps adding to a day for well over a day after it closes. settled_expected is what a healthy cycle would leave it at right now, and stale is yes|no comparing the two. Read stale; do not compute freshness from dates yourself. latest_day is the raw newest key and is always the fetch's own day, which reads zero.",
+      "command": "python3",
       "args": [
-        "-c",
-        "catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['history_file'])\" | xargs -r python3 -c \"import json,sys;from datetime import datetime,timedelta,timezone;d=json.load(open(sys.argv[1]));days=sorted({x for r in d.get('repos',{}).values() for m in ('clones','views') for x in (r.get(m) or {})});f=sorted(d.get('fetches_ingested') or []);t=datetime.strptime(f[-1],'%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc) if f else None;edge=((t-timedelta(hours=36)).date()-timedelta(days=1)).isoformat() if t else None;st=[x for x in days if edge is None or x<=edge];sd=st[-1] if st else None;exp=((datetime.now(timezone.utc)-timedelta(hours=36)).date()-timedelta(days=1)).isoformat();print(json.dumps({'schema_version':d.get('schema_version'),'owner':d.get('owner'),'updated':d.get('updated'),'latest_day':days[-1] if days else None,'settled_day':sd,'settled_expected':exp,'stale':'yes' if (sd is None or sd<exp) else 'no','settle_hours':36,'coverage':d.get('coverage'),'repos':len(d.get('repos',{})),'paths_repos':len(d.get('paths',{}))}))\""
+        "scripts/store-status.py"
       ],
       "timeout_seconds": 60,
       "output_cap_bytes": 4000
+    },
+    {
+      "name": "catnip_settle",
+      "description": "Print how long GitHub actually kept revising each recent day, measured from catnip's own readings, as JSON. verdict.proven_short lists days observed still being counted at or past the configured wait - a non-empty list means every window catnip draws is ending too early and settle_hours must be raised. verdict.unresolved lists days whose change landed inside a gap that straddles the wait; the daily cadence cannot place those, and they are not evidence against it.",
+      "command": "catnip",
+      "args": [
+        "settle",
+        "--json"
+      ],
+      "timeout_seconds": 60,
+      "output_cap_bytes": 20000
     },
     {
       "name": "catnip_report_write",

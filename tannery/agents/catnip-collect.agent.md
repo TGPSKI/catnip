@@ -28,6 +28,12 @@ on every run whether or not any data landed.
 An unchanged settled_day is not a failure on its own. If stale has been yes
 for three cycles, say so in reason.
 
+catnip-settle checks the wait that settled_day is computed from. Its
+proven_short is the list of days catnip observed GitHub still counting at or
+past that wait; an empty list is the healthy answer. A non-empty one means
+every window catnip draws is ending too early and CATNIP_SETTLE_HOURS needs
+raising - report it, and do not treat it as a collection failure.
+
 Three turns: run the pipeline, verify what landed, record. Each turn holds
 only its own tools - write_state only becomes available in the last.
 
@@ -38,10 +44,11 @@ the call itself errored.
 
 ---
 toolsets: [catnip-inspect, catnip-status]
-require_tool: [catnip-store-status]
-Call catnip-verify, then catnip-store-status, then call read_state with
-path=.state/catnip-collect.json. It prints "none" on the first cycle. Close
-the turn with one line: what the store shows and whether verify passed.
+require_tool: [catnip-store-status, catnip-settle]
+Call catnip-verify, then catnip-store-status, then catnip-settle, then call
+read_state with path=.state/catnip-collect.json. It prints "none" on the
+first cycle. Close the turn with one line: what the store shows and whether
+verify passed.
 
 ---
 toolsets: [catnip-record]
@@ -59,6 +66,7 @@ stale:          {{stale}}
 coverage:       {{coverage}}
 repos:          {{repos}}
 schema_version: {{schema_version}}
+settle_short:   {{settle_proven_short}}
 verified:       yes | no
 action:         success | failed
 reason:         <one sentence naming the evidence used>

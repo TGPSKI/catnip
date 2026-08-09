@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`catnip settle`** — measures how long GitHub actually kept revising each
+  recent day, instead of trusting the 36h constant. `history.py` now writes
+  each fetch's reading of each still-movable day to
+  `stats/history/daily_snapshots.jsonl` before the max-merge destroys it;
+  the store cannot answer this question by construction, because ingest
+  keeps the settled value and nothing about how long it took to arrive. The
+  command reports a proven interval, not a point: on a daily timer the
+  readings of one day sit ~24h apart, so a change between a 19h read and a
+  43h read is a contradiction of neither 36h nor anything else, and it is
+  reported as *unresolved* rather than as a false alarm. `catnip doctor`
+  carries the same verdict as a `settling` check. Backfilled from surviving
+  run directories on first ingest, which on this account re-derived the
+  0.4.0 measurement from a different input: 2026-08-05 read at 47% of its
+  clones and 33% of its views 12h after closing, final by 30h.
+- **`CATNIP_SETTLE_LOG_DAYS`** (90) bounds that log. It needs its own bound
+  because `catnip prune` now keeps runs whose days may still be revised, and
+  it is the one catnip artifact safe to delete: every day in it is already
+  in the store at its settled value.
+
+### Fixed
+
+- **`CATNIP_SETTLE_HOURS` in a config file made every command fail.** It was
+  documented in `catnip.conf.example` and never added to `config.DEFAULTS`,
+  so uncommenting the line catnip itself suggested produced `unknown key`
+  and exit 2. It is now a real key, honoured by `derive.settle_hours()` —
+  previously the environment was the only thing that could raise the wait,
+  while `catnip config` would have shown the file's value as if it were in
+  effect.
+
 ## [0.4.0] - 2026-08-09
 
 GitHub keeps adding counts to a day for well over a day after it closes, and

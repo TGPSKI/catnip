@@ -173,6 +173,10 @@ stats/
                         and views per repo (count and uniques), plus dated
                         referrer observations and a release/push event log
     snapshots.jsonl     append-only per-run, per-repo snapshots
+    daily_snapshots.jsonl  what each fetch read for each still-movable day,
+                        before the merge destroyed it. The one input
+                        `catnip settle` has; bounded by
+                        CATNIP_SETTLE_LOG_DAYS and safe to delete
 ```
 
 ## Configuration
@@ -248,6 +252,7 @@ otherwise. See [tannery/README.md](tannery/README.md).
 | `catnip tui` / `view` | Interactive UI / one view as text |
 | `catnip report` | Deterministic markdown analysis of the store (`--stdout`, `--force`) |
 | `catnip summary` | The newest run's `summary.md` |
+| `catnip settle` | Measure how long GitHub kept revising each recent day; exits non-zero when that contradicts `CATNIP_SETTLE_HOURS` |
 | `catnip prune` | Delete run directories past their retention — never one whose traffic days are missing from the store. Dry-run by default |
 | `catnip timer` | `install` · `status` · `logs` · `uninstall` · `print` · `cron` |
 

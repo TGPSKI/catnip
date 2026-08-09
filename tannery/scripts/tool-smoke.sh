@@ -4,7 +4,7 @@
 set -uo pipefail
 
 cfg="$(dirname "$0")/../shell-tools.json"
-readonly_tools=(catnip_verify catnip_store_status catnip_report_meta)
+readonly_tools=(catnip_verify catnip_store_status catnip_settle catnip_report_meta)
 templated=(catnip_view:view=audience catnip_derivation:view=audience)
 fail=0
 
