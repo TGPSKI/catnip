@@ -44,7 +44,7 @@ window - make no dispatch call: say so in one line, and the state turn
 records seeds: 0. A saturated cycle investigated zero times is the honest
 result.
 
-Otherwise make exactly one catnip-prowl-dispatch call: cycle {{latest_day}},
+Otherwise make exactly one catnip-prowl-dispatch call: cycle {{settled_day}},
 window {{window}}, and every SEED block passed together as the seeds
 argument. The blocks exist only inside that argument - blocks written as
 your reply dispatch nothing and the cycle silently dies. Close the turn by
@@ -62,10 +62,11 @@ them.
 
 ---
 toolsets: [catnip-record]
+require_tool: [write_state]
 Write this to .state/catnip-prowl-meta.json with write_state, on failure as
 well as success:
 
-cycle:   {{latest_day}}
+cycle:   {{settled_day}}
 window:  {{window}}
 seeds:   {{seeds_dispatched}} (write the literal 0 when nothing was dispatched)
 action:  success | failed

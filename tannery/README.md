@@ -73,7 +73,9 @@ because one reproduces byte-for-byte from the store and one is inference.
 - Any OpenAI-compatible endpoint — point `model` and `llm_endpoint` in
   `config.yaml` at whatever you serve. No frontier model is needed: every
   number an agent reports comes back from a tool.
-- `leather` on `PATH`.
+- `leather` v0.5.3 or newer on `PATH`. Older builds parse `require_tool:` as
+  the first line of the prompt instead of enforcing it, which is the whole
+  guard below.
 
 ## Run
 
@@ -116,6 +118,27 @@ The chain cannot race itself: the report runs when collect delivers, however
 long the fetch took. If a fetch fails outright and the store has not
 advanced, the report writer refuses and the report records `skipped` rather
 than describing yesterday as today.
+
+## Acting turns must act
+
+Every turn whose job is to call one tool declares `require_tool:`. A text
+response arriving with none of them called is refused and the turn continues;
+if its rounds run out the run fails, naming the turn and the tool.
+
+This is not defensive coding. On 2026-08-08 and 2026-08-09 the collect agent
+answered turn 1 with "catnip-run call succeeded (no error)" without calling
+anything, finished in 1.4s instead of 41 minutes, and wrote
+`latest_day: 2024-01-15, coverage: 100%, repos: 5000` into its state file —
+every figure invented, and the run recorded `success`. Replaying that turn
+against the same served model, the tool was in scope every time and the model
+answered in prose in 4 of 16 samples at the configured temperature. A prompt
+sentence cannot close that; the turn header can.
+
+The record turns carry a second rule: a `{{value}}` that still reads as
+literal braces means its tool never ran, and the field is written
+`unmeasured` with `action: failed`. Substitution is the only channel a
+measured number travels on, so an unsubstituted one is evidence of absence,
+not an invitation to supply it.
 
 ## Known upstream issues
 

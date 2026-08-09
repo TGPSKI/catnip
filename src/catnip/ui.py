@@ -180,6 +180,24 @@ class AnalyticsData:
             self.traffic_paths = stored_paths
             self.funnel_data = derive.funnel_rows(self.history)
 
+        # Trim the unsettled tail once, here, rather than at each of the
+        # places that read the store. Everything after the settled day is a
+        # day GitHub is still counting: it reads zero across every repo, and
+        # leaving it in made `1d` an empty ranking under a header that
+        # claimed to describe yesterday.
+        self._settled = derive.settled_day(self.history)
+        if self._settled is None and self.fetch_dir:
+            # Store-less: the run's own CSVs are all there is, and its stamp
+            # says how much of what it holds has finished settling.
+            self._settled = derive.settled_edge(self.fetch_dir.name)
+        if self._settled:
+            for metrics in (self.history.get('repos') or {}).values():
+                for metric in derive.METRICS:
+                    days = metrics.get(metric)
+                    if days:
+                        metrics[metric] = {d: v for d, v in days.items()
+                                           if d <= self._settled}
+
         self.history_all = {'clones': {}, 'views': {}}
         for repo, metrics in (self.history.get('repos') or {}).items():
             if not repo:
@@ -236,18 +254,15 @@ class AnalyticsData:
         for name, buckets in tmp['clones'].items():
             self._repo_clone_buckets[name] = sorted(buckets)
 
-        # Trim trailing days that have zero account-wide activity in *both* metrics —
-        # GitHub reports the fetch day (and sometimes the one before) as empty
-        # because the counts haven't settled, which would make "last day" read 0.
-        combined = defaultdict(int)
-        for buckets in list(self._repo_view_buckets.values()) + list(self._repo_clone_buckets.values()):
-            for ts, c in buckets:
-                combined[ts] += c
-        last_active = max((ts for ts, c in combined.items() if c > 0), default=None)
-        if last_active is not None:
-            for store in (self._repo_view_buckets, self._repo_clone_buckets):
-                for name in list(store):
-                    store[name] = [b for b in store[name] if b[0] <= last_active]
+        # Drop the days GitHub is still adding counts to. The edge comes from
+        # this run's own stamp rather than from the last day with traffic — a
+        # quiet day is a fact about the account, and trimming it as if it were
+        # unfinished slides every window a day left.
+        csv_edge = derive.settled_edge(self.fetch_dir.name) if self.fetch_dir else None
+        if csv_edge is not None:
+            for buckets in (self._repo_view_buckets, self._repo_clone_buckets):
+                for name in list(buckets):
+                    buckets[name] = [b for b in buckets[name] if b[0][:10] <= csv_edge]
 
         # Same rule as _windowed_metric: the store is the source of truth for
         # daily series whenever it exists, so the charts and the top lists
@@ -290,7 +305,8 @@ class AnalyticsData:
     def _repo_history_buckets(self, metric, field=0):
         """Per-repo daily buckets from the history store (survives fetch-dir
         pruning); {} when no store exists. field selects the stored pair —
-        0 = raw count, 1 = uniques."""
+        0 = raw count, 1 = uniques. The store was trimmed to the settled day
+        at load, so `_windowed` anchors on a day GitHub finished counting."""
         out = {}
         for repo, metrics in (self.history.get('repos') or {}).items():
             if not repo:
@@ -321,6 +337,11 @@ class AnalyticsData:
     def windowed_clones(self, timeframe):
         """{repo: clones} summed over the trailing window for this timeframe."""
         return self._windowed_metric('clones', self._repo_clone_buckets, timeframe)
+
+    def settled_day(self):
+        """The newest day on screen: the newest one GitHub has finished
+        counting. None when nothing has settled yet."""
+        return self._settled
 
     def history_series(self, metric):
         """Org daily series for one metric from the history store (oldest
@@ -1232,7 +1253,13 @@ class AnalyticsTUI(TuiApp):
             scope_tag = f'  [{self.scope_label()}]'
         else:
             scope_tag = f'  [{self.scope_label()}: needs catnip analyze]'
-        text = f' catnip  [{owner}]  [{self.timeframe}]{scope_tag}{search_tag}'
+        # Name the newest day on screen. Every window ends on the settled day,
+        # which is not today and not yesterday, so a bare "last day" invites
+        # the reader to assume a recency the data does not have.
+        through = self.data.settled_day()
+        through_tag = f'  through {through}' if through else ''
+        text = (f' catnip  [{owner}]  [{self.timeframe}]{through_tag}'
+                f'{scope_tag}{search_tag}')
         self._put(0, 0, text.ljust(max_x - 1), curses.color_pair(6) | self.curses.A_BOLD)
         # View strip: digit-key jump targets with the active view highlighted.
         # The full strip is ~100 cols, so shorten the inactive names to fit
@@ -3564,7 +3591,9 @@ def render_text(data, timeframe):
 
     owner = (data.totals.get('owner') or (data.history or {}).get('owner')
              or '(owner unset)')
-    print(f'catnip  [{owner}]  [{timeframe}]')
+    through = data.settled_day()
+    print(f'catnip  [{owner}]  [{timeframe}]'
+          + (f'  through {through}' if through else ''))
     print(f'Repos: {data._total_repos}  Stars: {data._totals["total_stars"]:,}  Forks: {data._totals["total_forks"]:,}')
     alltime = ''
     if data.totals.get('total_clones') is not None:

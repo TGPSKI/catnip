@@ -2,9 +2,10 @@
 """Clone intent & profile analysis from clone + view time series + popular paths."""
 import argparse
 import csv
-import json
 from datetime import datetime
 from pathlib import Path
+
+from catnip import runfiles
 
 
 def safe_int(val, default=0):
@@ -37,53 +38,29 @@ def clone_intent_label(ratio):
 def analyze_profiles(raw):
     raw = Path(raw)
 
-    org_repos = None
-    org_path = raw / "raw/org_repos.json"
-    if org_path.is_file():
-        try:
-            org_repos = json.load(org_path.open())
-        except (json.JSONDecodeError, OSError):
-            org_repos = []
-
-    repos_list = org_repos if isinstance(org_repos, list) else []
-    clone_data = {}
+    clone_data = {}   # repo_name -> [{timestamp, count, uniques}]
     view_data = {}
 
-    for ro in repos_list:
+    for ro in runfiles.repo_list(raw):
         rn = ro.get("name", "unknown")
-        rn_f = rn.replace("/", "_").replace("-", "--")
 
-        cp = raw / f"raw/repo_{rn_f}_clones.json"
-        if cp.is_file():
-            try:
-                cd = json.load(cp.open())
-                if isinstance(cd, dict):
-                    cs = cd.get("clones", [])
-                    if isinstance(cs, list) and len(cs) >= 3:
-                        clone_data[rn] = [
-                            {"timestamp": c.get("timestamp", ""),
-                             "count": safe_int(c.get("count")),
-                             "uniques": safe_int(c.get("uniques"))}
-                            for c in cs if isinstance(c, dict)
-                        ]
-            except (json.JSONDecodeError, OSError):
-                pass
+        cs = runfiles.daily(raw, rn, "clones")
+        if len(cs) >= 3:
+            clone_data[rn] = [
+                {"timestamp": c.get("timestamp", ""),
+                 "count": safe_int(c.get("count")),
+                 "uniques": safe_int(c.get("uniques"))}
+                for c in cs
+            ]
 
-        vp = raw / f"raw/repo_{rn_f}_views.json"
-        if vp.is_file():
-            try:
-                vd = json.load(vp.open())
-                if isinstance(vd, dict):
-                    vs = vd.get("views", [])
-                    if isinstance(vs, list) and len(vs) >= 3:
-                        view_data[rn] = [
-                            {"timestamp": v.get("timestamp", ""),
-                             "count": safe_int(v.get("count")),
-                             "uniques": safe_int(v.get("uniques"))}
-                            for v in vs if isinstance(v, dict)
-                        ]
-            except (json.JSONDecodeError, OSError):
-                pass
+        vs = runfiles.daily(raw, rn, "views")
+        if len(vs) >= 3:
+            view_data[rn] = [
+                {"timestamp": v.get("timestamp", ""),
+                 "count": safe_int(v.get("count")),
+                 "uniques": safe_int(v.get("uniques"))}
+                for v in vs
+            ]
 
     rows = []
 

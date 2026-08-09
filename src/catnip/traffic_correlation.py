@@ -2,9 +2,10 @@
 """Cross-repo Pearson correlation analysis of clone/view time series."""
 import argparse
 import csv
-import json
 import math
 from pathlib import Path
+
+from catnip import runfiles
 
 
 def safe_int(val, default=0):
@@ -48,46 +49,15 @@ def align_shift(a_len, b_len, lag):
 def analyze_correlations(raw):
     raw = Path(raw)
 
-    org_repos = None
-    org_path = raw / "raw/org_repos.json"
-    if org_path.is_file():
-        try:
-            org_repos = json.load(org_path.open())
-        except (json.JSONDecodeError, OSError):
-            org_repos = []
-
-    repos_list = org_repos if isinstance(org_repos, list) else []
     repo_data = {}
 
-    for ro in repos_list:
+    for ro in runfiles.repo_list(raw):
         rn = ro.get("name", "unknown")
-        rn_f = rn.replace("/", "_").replace("-", "--")
-
-        cp = raw / f"raw/repo_{rn_f}_clones.json"
-        vp = raw / f"raw/repo_{rn_f}_views.json"
-
-        c_series = []
-        v_series = []
-
-        if cp.is_file():
-            try:
-                cd = json.load(cp.open())
-                if isinstance(cd, dict):
-                    cs_list = cd.get("clones", [])
-                    if isinstance(cs_list, list):
-                        c_series = [safe_int(c.get("count", 0)) for c in cs_list if isinstance(c, dict)]
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        if vp.is_file():
-            try:
-                vd = json.load(vp.open())
-                if isinstance(vd, dict):
-                    vl_list = vd.get("views", [])
-                    if isinstance(vl_list, list):
-                        v_series = [safe_int(v.get("count", 0)) for v in vl_list if isinstance(v, dict)]
-            except (json.JSONDecodeError, OSError):
-                pass
+        # Ending on the fetch day would hand every pair of repos a shared
+        # zero to agree on, and a correlation built out of days nobody has
+        # traffic on is the artifact this module exists to avoid.
+        c_series = [safe_int(c.get("count", 0)) for c in runfiles.daily(raw, rn, "clones")]
+        v_series = [safe_int(v.get("count", 0)) for v in runfiles.daily(raw, rn, "views")]
 
         if c_series or v_series:
             repo_data[rn] = {"clones": c_series, "views": v_series}

@@ -2,10 +2,11 @@
 """MAD-based anomaly detection on daily clone/view time series."""
 import argparse
 import csv
-import json
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+
+from catnip import runfiles
 
 #: Kept equal to derive.Z_MIN_VALUE — the CSV and the TUI must agree about
 #: what counts as an event, or `catnip view anomaly` and the anomaly screen
@@ -82,62 +83,36 @@ def direction(z):
 
 
 def analyze_anomalies(raw):
+    """Score each repo's daily series, over the days GitHub has finished
+    counting. A day still being counted reads low and scores as a dip, and a
+    run filed exactly that against a day eighteen hours old — the shape of
+    the collection, not of the repo."""
     raw = Path(raw)
 
     # Load clone and view time series from raw JSON files
     clone_data = {}  # repo_name -> [(timestamp, count, uniques)]
     view_data = {}   # repo_name -> [(timestamp, count, uniques)]
 
-    org_repos = None
-    org_path = raw / "raw/org_repos.json"
-    if org_path.is_file():
-        try:
-            org_repos = json.load(org_path.open())
-        except (json.JSONDecodeError, OSError):
-            org_repos = []
-
-    repos_list = org_repos if isinstance(org_repos, list) else []
-    for ro in repos_list:
+    for ro in runfiles.repo_list(raw):
         rn = ro.get("name", "unknown")
-        rn_f = rn.replace("/", "_").replace("-", "--")
 
-        cp = raw / f"raw/repo_{rn_f}_clones.json"
-        if cp.is_file():
-            try:
-                cd = json.load(cp.open())
-                if isinstance(cd, dict):
-                    clones_raw = cd.get("clones", [])
-                    if isinstance(clones_raw, list) and len(clones_raw) >= 3:
-                        clone_data[rn] = []
-                        for c in clones_raw:
-                            if isinstance(c, dict):
-                                clone_data[rn].append({
-                                    "timestamp": c.get("timestamp", ""),
-                                    "count": safe_int(c.get("count")),
-                                    "uniques": safe_int(c.get("uniques")),
-                                    "user": c.get("count_user", 0),
-                                    "user_uniques": c.get("uniques_user", 0),
-                                })
-            except (json.JSONDecodeError, OSError):
-                pass
+        clones_raw = runfiles.daily(raw, rn, "clones")
+        if len(clones_raw) >= 3:
+            clone_data[rn] = [{
+                "timestamp": c.get("timestamp", ""),
+                "count": safe_int(c.get("count")),
+                "uniques": safe_int(c.get("uniques")),
+                "user": c.get("count_user", 0),
+                "user_uniques": c.get("uniques_user", 0),
+            } for c in clones_raw]
 
-        vp = raw / f"raw/repo_{rn_f}_views.json"
-        if vp.is_file():
-            try:
-                vd = json.load(vp.open())
-                if isinstance(vd, dict):
-                    views_raw = vd.get("views", [])
-                    if isinstance(views_raw, list) and len(views_raw) >= 3:
-                        view_data[rn] = []
-                        for v in views_raw:
-                            if isinstance(v, dict):
-                                view_data[rn].append({
-                                    "timestamp": v.get("timestamp", ""),
-                                    "count": safe_int(v.get("count")),
-                                    "uniques": safe_int(v.get("uniques")),
-                                })
-            except (json.JSONDecodeError, OSError):
-                pass
+        views_raw = runfiles.daily(raw, rn, "views")
+        if len(views_raw) >= 3:
+            view_data[rn] = [{
+                "timestamp": v.get("timestamp", ""),
+                "count": safe_int(v.get("count")),
+                "uniques": safe_int(v.get("uniques")),
+            } for v in views_raw]
 
     results = []
     repos_analyzed = len(set(clone_data.keys()) | set(view_data.keys()))

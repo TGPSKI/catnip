@@ -198,6 +198,103 @@ and summing would inflate everything several-fold.
 traffic window starts a new range, so a month when the timer was off
 renders as a gap rather than as zeros.
 
+### Settling: the newest days are not answers yet
+
+GitHub's traffic window ends on the day the fetch runs, and it returns that
+day as a flat zero. The counts appear afterwards, and they keep appearing
+for well over a day.
+
+Measured by re-reading the same day out of four run directories, over the
+same 35 repos every time, so no repo entering or leaving the account
+explains it. As a share of the value that day eventually settled at:
+
+| one day, read | views | clones |
+|---|---|---|
+| 12h after it closed | 33% | 47% |
+| 30h after it closed | 100% | 100% |
+| 36h after it closed | 100% | 100% |
+| 90h after it closed | 100% | 100% |
+
+A second day bounds the far end: read at +36h, +54h, +60h and +114h it
+returned the identical count every time, so a day is final at 36h and stays
+final 78 hours later. A third day was at 93% by +12h, so 12h is short even
+when the shortfall is small — how much lands late runs from a few percent
+to two thirds.
+
+Days older than the settling window were byte-identical in all reads. The
+late arrivals were not spread evenly across repos: seven went from exactly
+zero to their full count while the other 28 were already final at 12h, and
+four of those seven had been pushed on the day in question. **Traffic to a
+freshly pushed repo is the part that lands late** — which, for a tool whose
+job is ranking repos by recent traffic, is the part that most distorts the
+ranking.
+
+The proportions are the evidence; the counts are account traffic, which
+GitHub shows only to the account's admin, and they are not needed to fix the
+constant. What fixes it is when the value stopped changing.
+
+GitHub documents none of this. The API reference gives the window ("the last
+14 days") and the bucket alignment ("Timestamps are aligned to UTC midnight
+of the beginning of the day or week"); the traffic page says only that "full
+clones and visitor information update hourly". Read plainly that implies a
+closed day is complete within the hour, and the table above says otherwise.
+So 36 hours is a measurement, not a specification — see
+[#5](https://github.com/TGPSKI/catnip/issues/5) for making it self-checking.
+`CATNIP_SETTLE_HOURS` raises the wait for an account that settles slower;
+it cannot lower it below the measured floor, because a short wait costs
+nothing visible and publishes part of a day as all of it.
+
+`derive.settled_day` is the newest day whose own UTC close is `SETTLE_HOURS`
+behind the newest fetch. It is where every window ends, what the TUI header
+names, what the report's `meta.json` records, and what the interval guard
+compares.
+
+Two properties worth stating, because both were bugs first:
+
+- **The edge is hours, not a day count.** The same "two days back" means a
+  different amount of settling depending on what hour the timer fires; a
+  05:07 UTC run and a 23:00 UTC run on the same date have read the day
+  before last at 29h and 47h respectively. An hours rule holds whatever the
+  schedule.
+- **The edge is never the last day with traffic.** A zero day can be a real
+  zero — this account recorded ten in June — and trimming trailing zeros
+  would relabel a quiet Sunday as an unfinished one and slide every window a
+  day left without saying so.
+
+Because a day can be corrected after it was reported, two consumers carry
+the consequence. `catnip report` records a `window_digest` of the numbers it
+stated and rewrites itself when the store no longer matches. `catnip prune`
+keeps any run whose days may still be revised, ingested or not: the store
+holds the merged result, but only the run directory holds what a particular
+fetch saw, and `history --rebuild` reconstructs from surviving runs alone.
+
+Collecting more often does not shorten any of this. A day closes at 00:00
+UTC, so a fetch on the following day reads it at most 24h old however many
+times it runs — the wait is GitHub's pipeline, not a sampling rate. A second
+daily run buys redundancy against a failed collection, not a fresher window.
+
+**Where the rule is applied.** The arithmetic lives once, in
+`derive.settle_hours` and `derive.settled_edge`. It is applied at each
+distinct source, and only there:
+
+| source | applied at |
+|---|---|
+| the durable store | `derive.window` — the door every store computation goes through |
+| the store, in the TUI | trimmed once when the store is loaded |
+| a run's own CSVs, in the TUI | trimmed once, against that run's stamp |
+| the stitched series in `totals.py` | the 7d / prior-7d window bounds |
+| a run's raw payloads | `runfiles.daily`, shared by the four traffic analyses |
+
+The written CSVs are deliberately **not** trimmed. They are the record of
+what GitHub returned, and `history.py` max-merges them into the store — a
+day trimmed at write time is a day the store can never be corrected by.
+Settling is a read-time rule.
+
+A run directory with no parseable stamp keeps every day it holds, the same
+way a store with no `fetches_ingested` keeps its newest day. Copying or
+renaming a run out of the data directory destroys the only record of when
+it was read, and showing what it holds beats refusing to render it.
+
 ## Totals
 
 `stats/totals.json` is a pure output — regenerated from scratch every

@@ -35,7 +35,16 @@ CATNIP_FETCH_ISSUES=true
 # GitHub still serves.
 CATNIP_RETAIN_DAYS=30
 
+# How long GitHub keeps adding counts to a day after it closes. Measured at
+# 36h on one account (docs/metrics.md): a day read 12h after closing carried
+# a third of its final views. No window ends inside this wait, so raising it
+# moves every window further back. 36 is a floor — a lower value is ignored,
+# because a short wait publishes part of a day as all of it.
+# CATNIP_SETTLE_HOURS=36
+
 # Timer cadence (systemd OnCalendar syntax) and jitter. Daily is the
 # floor that keeps the 14-day traffic window from developing holes.
+# Collecting more often does not make a day settle sooner: the wait above is
+# GitHub's, not a sampling artifact.
 CATNIP_TIMER_ONCALENDAR=daily
 CATNIP_TIMER_RANDOM_DELAY=1h
