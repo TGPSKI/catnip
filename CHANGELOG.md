@@ -9,34 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`catnip settle`** — measures how long GitHub actually kept revising each
-  recent day, instead of trusting the 36h constant. `history.py` now writes
-  each fetch's reading of each still-movable day to
-  `stats/history/daily_snapshots.jsonl` before the max-merge destroys it;
-  the store cannot answer this question by construction, because ingest
-  keeps the settled value and nothing about how long it took to arrive. The
-  command reports a proven interval, not a point: on a daily timer the
-  readings of one day sit ~24h apart, so a change between a 19h read and a
-  43h read is a contradiction of neither 36h nor anything else, and it is
-  reported as *unresolved* rather than as a false alarm. `catnip doctor`
-  carries the same verdict as a `settling` check. Backfilled from surviving
-  run directories on first ingest, which on this account re-derived the
-  0.4.0 measurement from a different input: 2026-08-05 read at 47% of its
-  clones and 33% of its views 12h after closing, final by 30h.
-- **`CATNIP_SETTLE_LOG_DAYS`** (90) bounds that log. It needs its own bound
-  because `catnip prune` now keeps runs whose days may still be revised, and
-  it is the one catnip artifact safe to delete: every day in it is already
-  in the store at its settled value.
+- **`catnip settle`** — measures how long GitHub kept revising each recent
+  day, instead of trusting the 36h constant. `history.py` writes each
+  fetch's reading of each still-movable day to
+  `stats/history/daily_snapshots.jsonl` before merging; the store cannot
+  answer this, because max-merge keeps the settled value and discards the
+  path to it. Backfilling from surviving runs re-derived the 0.4.0
+  measurement from a different input: 2026-08-05 read at 47% of its clones
+  and 33% of its views 12h after closing, final by 30h.
+
+  The answer is an interval, not a point. On a daily timer the readings of
+  one day sit ~24h apart, so a change between a 19h read and a 43h read
+  contradicts nothing at 36h; those days report as `unresolved`. `catnip
+  doctor` carries the same verdict as a `settling` check.
+- **`CATNIP_SETTLE_LOG_DAYS`** (90) bounds that log. `catnip prune` cannot,
+  because it now keeps runs whose days may still be revised.
+
+### Changed
+
+- **Reports are named for the period they cover, and promoted when it
+  settles.** `reports/<UTC stamp>/` becomes
+  `reports/2026-08-05-2w.<write stamp>/` while a day in the window can
+  still be revised, and the newest recomputation moves to
+  `reports/2026-08-05-2w/` once none can. Until now only the newest report
+  was ever rewritten and every older one kept its original figures: a day
+  read at a third of its final count 12h after closing was understated
+  threefold by the report written in between.
+
+  Promotion is keyed on GitHub's 14-day window, not the settling wait —
+  `settled_day` is already `settle_hours` behind the newest fetch, so a
+  rule on the wait would promote every report the moment it was written.
+  `meta.json` gains `report_name`, `first_written`, `last_recomputed`,
+  `status` and `promoted`. `catnip report --locate` resolves the paths and
+  `--promote` runs only the sweep. Reports written before this stay where
+  they are.
 
 ### Fixed
 
-- **`CATNIP_SETTLE_HOURS` in a config file made every command fail.** It was
-  documented in `catnip.conf.example` and never added to `config.DEFAULTS`,
-  so uncommenting the line catnip itself suggested produced `unknown key`
-  and exit 2. It is now a real key, honoured by `derive.settle_hours()` —
-  previously the environment was the only thing that could raise the wait,
-  while `catnip config` would have shown the file's value as if it were in
-  effect.
+- **`CATNIP_SETTLE_HOURS` in a config file made every command fail.**
+  Documented in `catnip.conf.example`, never added to `config.DEFAULTS`, so
+  uncommenting the line catnip itself suggested produced `unknown key` and
+  exit 2. It is now a real key that `derive.settle_hours()` honours; before,
+  only the environment could raise the wait while `catnip config` showed the
+  file's value as if it were in effect.
 
 ## [0.4.0] - 2026-08-09
 

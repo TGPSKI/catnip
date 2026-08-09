@@ -23,7 +23,9 @@ data_dir="$(catnip config --json | python3 -c "import json,sys;print(json.load(s
 # published prowl.md: the recorder sends this document to the editor queue,
 # and the guarded edit-publish is the only writer of the reports dir.
 out=".state/prowl/${cycle}.assembled.md"
-prev_published="$(ls -1d "${data_dir}"/reports/*/ 2>/dev/null | sort | tail -1)prowl.md"
+# catnip owns the naming: reports are keyed on the period they cover, and a
+# promoted one sorts before its own superseded stamped siblings.
+prev_published="$(catnip report --locate | python3 -c "import json,sys;print(json.load(sys.stdin).get('prowl') or '/dev/null')")"
 # The config's CATNIP_OWNER is blank in auto mode; the store records who it
 # actually fetched.
 owner="$(python3 -c "import json;print(json.load(open('${data_dir}/stats/history/traffic_daily.json')).get('owner') or 'this account')")"

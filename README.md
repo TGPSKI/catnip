@@ -57,13 +57,26 @@ make link-agents HARNESSES=".aider"       # or wherever yours looks
 
 ## Deterministic reports and agentic inference
 
-`catnip report` writes deterministic markdown from the store to
-`<data>/reports/<UTC stamp>/report.md`: totals and change, movers with trend, attribution, account events, audience, clone intent, coupling, depth, and data limitations.
+`catnip report` writes deterministic markdown from the store: totals and change, movers with trend, attribution, account events, audience, clone intent, coupling, depth, and data limitations.
 
 Same store and timeframe produce byte-identical output, and every figure is
 tagged `measured`. A second report over an unchanged store refuses to write —
 catnip collects daily, so that would be one finding printed twice. `--force`
 overrides it; `--stdout` prints without writing and is never gated.
+
+A report is named for the period it covers, and its name says whether the
+figures can still change:
+
+```
+reports/2026-08-05-2w.20260807T031722Z/   a day in the window can still be revised
+reports/2026-08-05-2w/                    none of them can
+```
+
+GitHub keeps correcting a day for well over a day after it closes, so a
+report gets recomputed under a new write stamp when the store moves under
+it. The earlier copies stay. Once the period leaves GitHub's 14-day window
+nothing can revise it again, and the newest recomputation is moved to the
+unstamped name. `catnip report --locate` prints the current paths.
 
 `catnip-prowl` is the inferential pass: hypotheses the report doesn't ask,
 tested against the raw data, refutations reported with the findings. It

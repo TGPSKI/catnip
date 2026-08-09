@@ -1,33 +1,27 @@
 #!/usr/bin/env python3
 """Measure how long GitHub keeps revising a day, from catnip's own readings.
 
-`derive.SETTLE_HOURS_FLOOR` is 36. That is a measurement, not a
-specification: GitHub documents no settling latency at all — only that
-clone and visitor information "update hourly" — so the constant can rot
-silently if GitHub's pipeline changes, and nothing else in catnip would
-notice. It was derivable the first time only by accident, because three
-run directories happened to survive `catnip prune` and could be compared.
+`derive.SETTLE_HOURS_FLOOR` is 36, and that is a measurement of an
+undocumented pipeline — GitHub says only that clone and visitor
+information "update hourly". It can rot silently, and it was derivable the
+first time only because three run directories happened to survive a prune.
 
-The store cannot answer the question by construction. Merges are
-element-wise max per (repo, metric, day), so the revision history is
-destroyed on ingest: the store knows the final number and nothing about
-how long it took to arrive. `history.py` therefore writes every reading
-of every still-movable day to `daily_snapshots.jsonl` before merging, and
-this module reads it back.
+The store cannot answer the question: max-merge per (repo, metric, day)
+destroys the revision history on ingest. So `history.py` writes every
+reading of every still-movable day to `daily_snapshots.jsonl` before
+merging, and this module reads it back.
 
 Two rules keep the answer honest:
 
 - **The same repos in every reading.** A day's readings are summed over
-  the repos present in *all* of them. A repo added or dropped between
-  fetches otherwise moves the total on its own, and that movement would
-  read as GitHub still counting.
-- **A change is only proof at the age of the reading it followed.** With
-  daily collection the readings of one day sit ~24h apart, so a value that
-  differs between a 19h read and a 43h read changed *somewhere* in
-  between. That proves the day was unfinished at 19h; it proves nothing
-  about 36h. `still_moving_at` is the proven lower bound and `final_by`
-  the upper one, and a wait is only contradicted when the lower bound
-  reaches it.
+  the repos present in all of them, or a repo added between fetches moves
+  the total on its own and reads as GitHub still counting.
+- **A change proves only the age of the reading it followed.** On a daily
+  timer the readings of one day sit ~24h apart, so a value differing
+  between a 19h read and a 43h read changed somewhere in between: the day
+  was unfinished at 19h, and nothing is proven about 36h.
+  `still_moving_at` is that lower bound, `final_by` the upper one, and a
+  wait is contradicted only when the lower bound reaches it.
 """
 from __future__ import annotations
 
@@ -48,8 +42,7 @@ MIN_READINGS = 2
 
 def load(path):
     """Every reading in the log, oldest fetch first. Unreadable lines are
-    skipped: this file is a measurement, and a truncated tail is a reason
-    to report less, never to fail a command that has real work to do."""
+    skipped: a truncated tail is a reason to report less, not to fail."""
     path = Path(path)
     if not path.is_file():
         return []
@@ -119,15 +112,13 @@ def day_curve(day, fetches):
 def _bounds(observations, metric):
     """When this metric stopped moving, as a proven interval.
 
-    `still_moving_at` is the age of the newest reading that was later
-    contradicted — the last moment the day is *known* to have been
-    unfinished. `final_by` is the age of the oldest reading that already
-    held the final value with nothing disagreeing after it. The truth is
-    somewhere between, and the gap is the collection cadence.
+    `still_moving_at` is the newest reading that was later contradicted —
+    the last age the day is known to have been unfinished. `final_by` is
+    the oldest reading holding the final value with nothing disagreeing
+    after it. The gap between them is the collection cadence.
 
     Readings taken before the day closed carry a negative age and are
-    excluded from both: a day still open is trivially unfinished, and
-    saying so is not a measurement of GitHub's pipeline.
+    excluded from both: a day still open is trivially unfinished.
     """
     closed = [o for o in observations
               if o["age_hours"] is not None and o["age_hours"] >= 0]
@@ -166,12 +157,11 @@ def _widest(all_curves, field, days=None):
 def verdict(all_curves, hours=None):
     """Does the log contradict the configured wait?
 
-    Three outcomes, and the middle one is the common case on a daily
-    timer. `proven_short` is a day observed still moving at or past the
-    wait — that is a fact, and the wait is too low. `unresolved` is a day
-    whose change lands inside a gap straddling the wait: the cadence
-    cannot place it, and collecting twice a day would. `confirmed` is a
-    day that already held its final value before the wait expired.
+    `proven_short` is a day observed still moving at or past the wait, so
+    the wait is too low. `unresolved` is a day whose change lands inside a
+    gap straddling the wait — the daily cadence cannot place it, and
+    collecting twice a day would. `confirmed` held its final value before
+    the wait expired. Unresolved is the common case on a daily timer.
     """
     hours = derive.settle_hours() if hours is None else hours
     proven, unresolved, confirmed, thin = [], [], [], []
@@ -202,7 +192,7 @@ def verdict(all_curves, hours=None):
 
 
 def summary_line(result):
-    """One sentence an operator can act on, or find out nothing is wrong."""
+    """One sentence: what to change, or that there is nothing to change."""
     hours = result["settle_hours"]
     if result["proven_short"]:
         needed = int(result["observed_still_moving_at"] or hours) + 1
@@ -251,9 +241,9 @@ def render(all_curves, result, stream=None):
     print(f"  {'day':<12} {'reads':>5} {'repos':>5}  {'clones':<14} "
           f"{'views':<14} {'moving at':>9} {'final by':>9}", file=stream)
     for curve in all_curves:
-        # The first CLOSED reading, not the first reading: a day read while
-        # still open returns a flat zero, and pairing that with the final
-        # value would print every day as a hundredfold late arrival.
+        # The first CLOSED reading: a day read while still open returns a
+        # flat zero, and pairing that with the final value would print
+        # every day as a hundredfold late arrival.
         clones = _span(curve["clones"])
         views = _span(curve["views"])
         lower = _widest([curve], "still_moving_at")
@@ -292,8 +282,7 @@ def main(argv=None):
         sys.stdout.write("\n")
         return 0
     render(all_curves, result)
-    # A contradicted wait is an operator action, and a command that reports
-    # it with exit 0 is a command a timer will never surface.
+    # A timer never surfaces a contradiction reported with exit 0.
     return 1 if result["proven_short"] else 0
 
 

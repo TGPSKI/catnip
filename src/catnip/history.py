@@ -78,12 +78,10 @@ def merge_fetch(store, fetch_dir):
     """Max-merge one fetch dir's traffic series into the store. Returns the
     number of (repo, metric, day) points seen.
 
-    The merge is element-wise max, so it keeps the settled value and
-    destroys the revision history: afterwards the store knows what a day
-    ended at and nothing about how long it took to get there. That is the
-    right shape for every question except whether the settling wait is
-    still true, which is what `probe_readings` preserves from the same
-    CSV before this runs.
+    Element-wise max keeps the settled value and destroys the revision
+    history, which is the right shape for every question except whether
+    the settling wait still holds. `probe_readings` preserves that from
+    the same CSV, before this runs.
     """
     points = 0
     for row in read_csv_rows(fetch_dir / "analysis" / "github_traffic_timeseries.csv"):
@@ -104,11 +102,10 @@ def merge_fetch(store, fetch_dir):
 def probe_window(fetch_id):
     """The days a fetch records for the settle measurement, oldest first.
 
-    Bounded because the log grows per fetch per repo per day and the days
-    beyond it never move: `settle_probe_days` covers the wait plus enough
-    days after it to watch a day stand still. A day still changing at the
-    far edge of this window is itself the measurement saying the window —
-    and the wait — is too short.
+    Bounded because the log grows per fetch per repo per day:
+    `settle_probe_days` covers the wait plus enough days after it to watch
+    a day stand still. A day still changing at the far edge is the
+    measurement saying the window, and the wait, are too short.
     """
     fetched = derive.fetch_time(fetch_id)
     if fetched is None:
@@ -121,18 +118,14 @@ def probe_window(fetch_id):
 def probe_readings(fetch_dir):
     """What this fetch read for each still-movable day: {day: {repo: {...}}}.
 
-    Zeros are written out explicitly, and that is the whole subtlety.
-    GitHub returns no row at all for a repo-day with no traffic, so a repo
-    that went from nothing to its full count — which the original
-    measurement found was most of the late arrival, concentrated on repos
-    pushed that day — is simply absent from the earlier reading. Treating
-    absence as absence loses exactly the movement worth catching, and
-    treating it as zero across a repo the fetch never collected would
-    invent movement when the account gains a repo.
+    Zeros are written explicitly. GitHub returns no row for a repo-day
+    with no traffic, so a repo that went from nothing to its full count —
+    most of the late arrival, concentrated on repos pushed that day — is
+    absent from the earlier reading rather than zero in it.
 
-    So the zeros are filled for the repos THIS fetch covered, taken as the
-    repos with any row anywhere in its window. A repo silent for all 14
-    days is not covered and contributes nothing either way.
+    Filled only for the repos this fetch covered, taken as the repos with
+    any row anywhere in its window; zeros for a repo it never collected
+    would make the account gaining a repo read as a revision.
     """
     days = probe_window(fetch_dir.name)
     if not days:
@@ -159,10 +152,9 @@ def probe_readings(fetch_dir):
 def append_daily_snapshots(path, fetch_id, readings):
     """Append one line per (fetch, repo, day) and return how many.
 
-    Both metrics ride on one line rather than one line per (fetch, repo,
-    day, metric): the key is still unique, the file is half the size, and
-    the value shape is the store's own, so a reader that knows one knows
-    the other.
+    Both metrics on one line rather than one per (fetch, repo, day,
+    metric): same unique key, half the size, and the value shape is the
+    store's own.
     """
     if path is None or not readings:
         return 0
@@ -185,11 +177,10 @@ def append_daily_snapshots(path, fetch_id, readings):
 def trim_daily_snapshots(path, retain_days, newest_day=None):
     """Drop readings of days older than `retain_days`. Returns how many.
 
-    This file has to be bounded by something other than `catnip prune`,
-    which now keeps runs precisely because their days may still be revised.
-    It is also the one catnip artifact that is safe to trim: every day in
-    it is in the store at its settled value, so what is lost is the record
-    of how long that took, for days long past caring.
+    Bounded by something other than `catnip prune`, which now keeps runs
+    precisely because their days may still be revised. Safe to trim, and
+    the only catnip artifact that is: every day in it is in the store at
+    its settled value, so what is lost is how long that took.
     """
     path = Path(path)
     if not path.is_file() or retain_days <= 0:
@@ -427,11 +418,9 @@ def ingest(runs_dir, history_dir, owner, rebuild=False, settle_log_days=90):
         store.setdefault("events", {})
         store.setdefault("paths", {})
 
-    # The settle log arrived after the store did, and every surviving run
-    # directory holds a reading the store has already max-merged away. One
-    # pass over them is the difference between an operator being able to
-    # measure the wait today and having to wait three collections for a
-    # second reading of the same day.
+    # Every surviving run holds a reading the store has already max-merged
+    # away. One pass over them is the difference between measuring the wait
+    # today and waiting three collections for a second reading of one day.
     settle_backfill = []
     if not daily_path.exists():
         settle_backfill = [d for d in list_fetch_dirs(runs_dir)

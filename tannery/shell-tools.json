@@ -65,11 +65,11 @@
     },
     {
       "name": "catnip_report_meta",
-      "description": "Print the newest written report's meta.json (latest_day, written, provenance) - the authority on whether a report exists for the current store.",
-      "command": "bash",
+      "description": "Print the newest written report's paths and meta.json as JSON - the authority on whether a report exists for the current store. A report is named for the period it covers. promoted:true means its window can no longer be revised and the figures are final; promoted:false means a later collection can still change them and the report will be recomputed under a new write stamp.",
+      "command": "catnip",
       "args": [
-        "-c",
-        "d=$(catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['data_dir'])\")/reports; ls -1d \"$d\"/*/ 2>/dev/null | sort | tail -1 | xargs -r -I{} cat {}meta.json 2>/dev/null || echo none"
+        "report",
+        "--locate"
       ],
       "timeout_seconds": 60,
       "output_cap_bytes": 2000
@@ -186,7 +186,7 @@
       "command": "bash",
       "args": [
         "-c",
-        "d=$(catnip config --json | python3 -c \"import json,sys;print(json.load(sys.stdin)['paths']['data_dir'])\"); latest=$(ls -1d \"$d\"/reports/*/ 2>/dev/null | sort | tail -1); cat \"${latest}prowl.md\" 2>/dev/null || echo none"
+        "p=$(catnip report --locate | python3 -c \"import json,sys;d=json.load(sys.stdin);print(d.get('prowl') or '')\"); [ -n \"$p\" ] && cat \"$p\" 2>/dev/null || echo none"
       ],
       "required": [],
       "timeout_seconds": 30,

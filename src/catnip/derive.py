@@ -67,15 +67,11 @@ _CONFIG_SETTLE_HOURS = None
 def _config_settle_hours():
     """`CATNIP_SETTLE_HOURS` as the config file resolves it, or "".
 
-    This module is otherwise pure: it reads a store and nothing else. The
-    exception is deliberate, because the alternative is worse. The knob is
-    documented in `catnip.conf`, and a knob that only the environment
-    honours is the coordinate mismatch AGENTS.md warns about — the operator
-    edits the file, `catnip config` shows the new value, and every window
-    keeps using the old one with nothing to indicate which is real.
-
-    Resolved once: the file cannot change meaningfully inside one command,
-    and `settled_edge` is on the path of every windowed number.
+    The one thing this module reads besides a store. A knob only the
+    environment honours is a coordinate mismatch: the operator edits the
+    file, `catnip config` shows the new value, and every window keeps
+    using the old one. Resolved once, because `settled_edge` is on the
+    path of every windowed number.
     """
     global _CONFIG_SETTLE_HOURS
     if _CONFIG_SETTLE_HOURS is None:
@@ -109,6 +105,12 @@ def settle_probe_days(hours=None):
     """How many days back a fetch records for the settle measurement."""
     hours = settle_hours() if hours is None else hours
     return -(-hours // 24) + SETTLE_PROBE_MARGIN_DAYS
+
+#: How many trailing days GitHub's traffic endpoints serve. Documented, for
+#: once: "the last 14 days". A day older than this cannot be requested again
+#: by anyone, which makes it the one horizon past which the store's value is
+#: final by construction rather than by measurement.
+TRAFFIC_WINDOW_DAYS = 14
 
 #: Trailing days per timeframe key. None means "the whole store".
 WINDOW_DAYS = {"1d": 1, "1w": 7, "2w": 14, "all": None, "epoch": None}
@@ -297,6 +299,24 @@ def settled_day(store, fetched=None):
         return days[-1]
     settled = [d for d in days if d <= edge]
     return settled[-1] if settled else None
+
+
+def final_day(now=None):
+    """The newest day no future fetch could revise.
+
+    Deliberately not `settle_hours` behind anything: `settled_day` is
+    already that far behind the newest fetch, so every day a report covers
+    is older than the wait at the moment it is written, and a rule on the
+    wait alone would be vacuous. Past the 14-day window no fetch can
+    return the day at all, so the store's value is final by construction.
+
+    Strictly past, not on the boundary — the endpoints sometimes return a
+    fifteenth bucket. Wall-clock, not the store's newest fetch: a day that
+    fell out of the window while collection was stopped is more final, not
+    less.
+    """
+    now = now or datetime.now(timezone.utc)
+    return (now.date() - timedelta(days=TRAFFIC_WINDOW_DAYS + 1)).isoformat()
 
 
 def window(store, timeframe, end=None):

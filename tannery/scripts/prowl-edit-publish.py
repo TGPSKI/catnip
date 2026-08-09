@@ -57,12 +57,14 @@ def main():
               f"was assembled at {stamped}; a fresher edit is queued")
         return
 
-    cfg = json.loads(subprocess.check_output(
-        ["catnip", "config", "--json"], text=True))
-    reports = sorted(Path(cfg["paths"]["data_dir"]).glob("reports/*/"))
-    if not reports:
+    # `catnip report --locate`, not a glob: reports are named for the period
+    # they cover, and a promoted one sorts before its own superseded stamped
+    # siblings. Sorting names would publish beside an older recomputation.
+    found = json.loads(subprocess.check_output(
+        ["catnip", "report", "--locate"], text=True))
+    if not found.get("prowl"):
         fail("no report directory to publish beside")
-    out = reports[-1] / "prowl.md"
+    out = Path(found["prowl"])
     body = COUNTS_RE.sub("", doc).rstrip() + "\n"
     out.write_text(body)
 

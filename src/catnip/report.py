@@ -21,12 +21,25 @@ findings, they are the same finding printed twice. The primary gate is
 therefore whether the store's latest observed day has ADVANCED since the
 last report, with a one-day clock floor as a cheap secondary. Both are
 overridable, because a prototype that cannot re-run is not a prototype.
+
+A report is named for the period it covers, not the moment it was written,
+and provisionality is in the name:
+
+    reports/2026-08-05-2w.20260807T031722Z/   a day in the window can still
+                                              be revised
+    reports/2026-08-05-2w/                    none of them can
+
+Recomputations of one period sit side by side and nothing is overwritten:
+open the unstamped name for the settled answer, a stamped one to audit
+what was believed on a date. `promote` runs on every invocation, because a
+period settles about two weeks after the cycle that wrote it.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,19 +58,60 @@ MEASURED = "measured"
 
 STAMP_FMT = "%Y%m%dT%H%M%SZ"
 
+#: `<period>.<write stamp>` — a recomputable report.
+PROVISIONAL_RE = re.compile(r"^(?P<name>.+)\.(?P<stamp>\d{8}T\d{6}Z)$")
+#: `<covered day>-<timeframe>` — the period a report describes.
+NAME_RE = re.compile(r"^(?P<day>\d{4}-\d{2}-\d{2})-(?P<timeframe>\w+)$")
+#: Reports written before periods had names: one directory per write stamp.
+LEGACY_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
-# ---- guard -------------------------------------------------------------------
+
+# ---- naming ------------------------------------------------------------------
+
+def report_name(store, timeframe):
+    """The period a report covers: `<newest day>-<timeframe>`.
+
+    Keyed on the day because that is what promotion turns on, and because
+    two reports of one period are one document recomputed. The timeframe
+    is in the name because `1w` and `2w` end on the same day.
+    """
+    days = derive.window(store, timeframe)
+    end = days[-1] if days else (derive.settled_day(store) or "unknown")
+    return f"{end}-{timeframe}"
+
+
+def split_name(dir_name):
+    """(period, write stamp) for a report directory. Stamp is None when
+    the report has been promoted, and period is None for a legacy one."""
+    m = PROVISIONAL_RE.match(dir_name)
+    if m:
+        return m.group("name"), m.group("stamp")
+    if LEGACY_RE.match(dir_name):
+        return None, dir_name
+    return dir_name, None
+
 
 def previous_reports(reports_dir):
-    """Existing report directories, oldest first."""
+    """Every report directory, oldest write first.
+
+    Sorted by write time, not by name: a promoted report sorts before its
+    own superseded stamped siblings, so `[-1]` on names hands the guard an
+    older recomputation.
+    """
     reports_dir = Path(reports_dir)
     if not reports_dir.is_dir():
         return []
     out = []
     for child in sorted(reports_dir.iterdir()):
-        if (child / "report.md").is_file():
-            out.append(child)
-    return out
+        if not (child / "report.md").is_file():
+            continue
+        meta = load_meta(child)
+        written = meta.get("last_recomputed") or meta.get("written")
+        if not written:
+            _, stamp = split_name(child.name)
+            written = stamp or child.name
+        out.append((written, child.name, child))
+    return [child for _, _, child in sorted(out)]
 
 
 def load_meta(report_dir):
@@ -186,9 +240,10 @@ def _table(headers, rows):
 
 # ---- sections ----------------------------------------------------------------
 
-def section_provenance(store, cfg, timeframe, run_dir, now):
+def section_provenance(store, cfg, timeframe, run_dir, now, first=None):
     days = derive.window(store, timeframe)
     coverage = store.get("coverage") or []
+    name = report_name(store, timeframe)
     lines = [
         "## Provenance",
         "",
@@ -196,8 +251,16 @@ def section_provenance(store, cfg, timeframe, run_dir, now):
         "store by `catnip.derive`, reproducible from the same inputs.",
         "",
     ]
-    lines += _table(["field", "value"], [
+    rows = [
+        ["report", f"`{name}`"],
         ["generated", now.strftime("%Y-%m-%d %H:%M UTC")],
+    ]
+    if first:
+        # Present only on a recomputation: the store changed under a period
+        # already reported, so the figures below are not the ones published
+        # at `first`. That copy is still on disk under its own write stamp.
+        rows.append(["first written", first])
+    lines += _table(["field", "value"], rows + [
         ["owner", store.get("owner") or "(unset)"],
         ["timeframe", f"`{timeframe}` ({len(days)} days"
          + (f", {days[0]} to {days[-1]}" if days else "") + ")"],
@@ -449,8 +512,12 @@ def section_limits(store, timeframe, funnel_rows):
 
 # ---- assembly ----------------------------------------------------------------
 
-def build_report(store, cfg, timeframe="2w", run_dir=None, now=None):
-    """The full markdown document as a string."""
+def build_report(store, cfg, timeframe="2w", run_dir=None, now=None, first=None):
+    """The full markdown document as a string.
+
+    `first` is the write stamp of the period's first report, passed only
+    when this is a recomputation of one already on disk.
+    """
     now = now or datetime.now(timezone.utc)
     funnel_rows = read_csv(run_dir / "analysis" / "traffic_funnel.csv") if run_dir else []
     owner = store.get("owner") or "this account"
@@ -459,7 +526,7 @@ def build_report(store, cfg, timeframe="2w", run_dir=None, now=None):
              f"is `{MEASURED}`: derived arithmetic, reproducible from the same "
              f"store and timeframe._", ""]
     for section in (
-        section_provenance(store, cfg, timeframe, run_dir, now),
+        section_provenance(store, cfg, timeframe, run_dir, now, first),
         section_headline(store, timeframe),
         section_movers(store, timeframe),
         section_attribution(store, timeframe),
@@ -474,14 +541,105 @@ def build_report(store, cfg, timeframe="2w", run_dir=None, now=None):
     return "\n".join(lines).rstrip() + "\n"
 
 
+# ---- promotion ---------------------------------------------------------------
+
+def first_written(reports_dir, name):
+    """When this period was first reported, across every recomputation."""
+    stamps = []
+    for child in Path(reports_dir).iterdir() if Path(reports_dir).is_dir() else []:
+        period, stamp = split_name(child.name)
+        if period != name or not (child / "report.md").is_file():
+            continue
+        meta = load_meta(child)
+        stamps.append(meta.get("first_written") or meta.get("written") or stamp or "")
+    return min((s for s in stamps if s), default=None)
+
+
+def promote(reports_dir, now=None):
+    """Move every settled period to its unstamped name. Returns the moves.
+
+    Runs on every invocation: a period becomes final about two weeks after
+    the cycle that produced it, so tying promotion to a report being
+    written would leave the settled copy stamped while the store is quiet.
+
+    The newest recomputation is promoted — it read the most corrected
+    store. Its superseded siblings stay put; they are the record of what
+    was believed on each date.
+    """
+    reports_dir = Path(reports_dir)
+    if not reports_dir.is_dir():
+        return []
+    cutoff = derive.final_day(now)
+    groups = {}
+    for child in sorted(reports_dir.iterdir()):
+        period, stamp = split_name(child.name)
+        if not stamp or not period or not (child / "report.md").is_file():
+            continue
+        m = NAME_RE.match(period)
+        if m and m.group("day") <= cutoff:
+            groups.setdefault(period, []).append((stamp, child))
+
+    moved = []
+    for period, entries in sorted(groups.items()):
+        target = reports_dir / period
+        if target.exists():
+            continue
+        stamp, src = max(entries)
+        src.rename(target)
+        meta = load_meta(target)
+        meta.update({"promoted": True,
+                     "promoted_at": (now or datetime.now(timezone.utc)).strftime(STAMP_FMT),
+                     "status": "settled"})
+        (target / "meta.json").write_text(
+            json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        moved.append((src, target))
+    return moved
+
+
+def locate(reports_dir):
+    """The newest report on disk, as paths an agent can open. None if empty.
+
+    Exists so nothing outside this module knows the naming rule. Globbing
+    `reports/*/` and taking the last was correct while every directory was
+    a write stamp; with periods it returns a superseded recomputation
+    whenever a promoted report has stamped siblings.
+    """
+    prior = previous_reports(reports_dir)
+    if not prior:
+        return None
+    latest = prior[-1]
+    period, stamp = split_name(latest.name)
+    return {
+        "name": period,
+        "dir": str(latest),
+        "report": str(latest / "report.md"),
+        "meta_path": str(latest / "meta.json"),
+        "prowl": str(latest / "prowl.md"),
+        "promoted": stamp is None and period is not None,
+        "meta": load_meta(latest),
+    }
+
+
+# ---- writing -----------------------------------------------------------------
+
 def write_report(text, reports_dir, store, timeframe, run_dir, now=None):
-    """Write report.md + meta.json under a runtime-stamped directory."""
+    """Write report.md + meta.json under `<period>.<write stamp>/`."""
     now = now or datetime.now(timezone.utc)
     stamp = now.strftime(STAMP_FMT)
-    out_dir = Path(reports_dir) / stamp
+    reports_dir = Path(reports_dir)
+    name = report_name(store, timeframe)
+    out_dir = reports_dir / f"{name}.{stamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "report.md").write_text(text, encoding="utf-8")
     meta = {
+        "report_name": name,
+        # Apart: when this period was first described, and when the
+        # description was last redone because the store changed.
+        "first_written": first_written(reports_dir, name) or stamp,
+        "last_recomputed": stamp,
+        "status": "provisional",
+        "promoted": False,
+        # Under its original name: readers older than periods use this.
         "written": stamp,
         # The day the report actually covers, which `guard` compares against
         # on the next cycle. It must be the same day the windows end on.
@@ -517,6 +675,10 @@ def main(argv=None):
                         "last report. For prototyping.")
     p.add_argument("--stdout", action="store_true",
                    help="Print the report instead of writing it.")
+    p.add_argument("--promote", action="store_true",
+                   help="Only run the promotion sweep; write nothing.")
+    p.add_argument("--locate", action="store_true",
+                   help="Print the newest report's paths and meta as JSON.")
     args = p.parse_args(argv)
 
     try:
@@ -525,6 +687,20 @@ def main(argv=None):
         print(f"catnip: config error: {exc}", file=sys.stderr)
         return 2
 
+    reports_dir = args.out_dir or cfg.reports_dir
+
+    if args.locate:
+        json.dump(locate(reports_dir) or {}, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
+
+    # Whatever the guard decides: a period settles about two weeks after
+    # the cycle that wrote it.
+    for src, target in promote(reports_dir):
+        print(f"Promoted: {src.name} -> {target.name}")
+    if args.promote:
+        return 0
+
     if not cfg.history_file.is_file():
         print(f"catnip: no durable store at {cfg.history_file}. "
               f"Run `catnip run` first.", file=sys.stderr)
@@ -532,7 +708,6 @@ def main(argv=None):
     with cfg.history_file.open(encoding="utf-8") as fh:
         store = json.load(fh)
 
-    reports_dir = args.out_dir or cfg.reports_dir
     if not args.stdout:
         ok, reason = guard(reports_dir, store, timeframe=args.timeframe)
         if not ok and not args.force:
@@ -540,7 +715,8 @@ def main(argv=None):
             print("catnip: pass --force to write anyway.", file=sys.stderr)
             return 3
 
-    text = build_report(store, cfg, args.timeframe, cfg.latest_run())
+    first = first_written(reports_dir, report_name(store, args.timeframe))
+    text = build_report(store, cfg, args.timeframe, cfg.latest_run(), first=first)
     if args.stdout:
         print(text, end="")
         return 0

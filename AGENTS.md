@@ -56,7 +56,10 @@ src/catnip/
                       does not decide what a number means (that is derive.py)
   report.py           `catnip report` — deterministic markdown from derive.py
                       alone. Same store + timeframe = byte-identical output;
-                      the floor the catnip-prowl skill stands on
+                      the floor the catnip-prowl skill stands on. Owns the
+                      report naming rule: `<period>.<stamp>/` while the
+                      window can still be revised, `<period>/` once it
+                      cannot. Use `--locate`, never a glob
   doctor.py           preflight + health checks; `--json` is an agent surface
   prune.py            retention with the data-loss guard
   timer.py            renders and installs the systemd user units

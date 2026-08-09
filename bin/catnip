@@ -58,7 +58,8 @@ Reading
                   anomaly, profile, correlation, funnel, lang,
                   attribution)
   report          Write a deterministic markdown analysis of the store
-                  (--stdout to print, --force to bypass the interval guard)
+                  (--stdout to print, --force to bypass the interval guard,
+                  --locate to print the newest report's paths as JSON)
   settle          Measure how long GitHub kept revising each recent day, and
                   say whether that contradicts CATNIP_SETTLE_HOURS
   summary         Print the newest run's summary.md
