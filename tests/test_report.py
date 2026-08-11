@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fixtures import make_run  # noqa: E402
+from fixtures import make_run, write_config  # noqa: E402
 
 from catnip import history, report  # noqa: E402
 from catnip.analyze import analyze_github  # noqa: E402
@@ -410,6 +410,27 @@ class SettlingTests(unittest.TestCase):
         report.settle(self.dir, self._store("2026-08-06"), self.cfg, self.LATER)
         self.assertTrue((self.dir / "2026-08-06-2w").is_dir())
         self.assertTrue((self.dir / "2026-08-06-1w").is_dir())
+
+    def test_transitions_puts_only_json_on_stdout_when_one_happens(self):
+        # The tannery decides whether a cycle of inference is owed by
+        # parsing this. A `Settled: ...` notice ahead of the JSON broke
+        # `json.load` on precisely the runs that report a transition, and
+        # on no others — the caller failed exactly when it mattered and
+        # looked healthy every other time.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            draft = root / "reports" / "2026-07-01-2w.unsettled"
+            draft.mkdir(parents=True)
+            (draft / "report.md").write_text("draft\n")
+            (draft / "meta.json").write_text(json.dumps({"written": "20260701T120000Z"}))
+            cfg_path = write_config(root)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = report.main(["--transitions", "--config", str(cfg_path)])
+            self.assertEqual(rc, 0)
+            payload = json.loads(out.getvalue())
+            self.assertEqual([t["period"] for t in payload["settled"]],
+                             ["2026-07-01-2w"])
 
     def test_a_transition_is_reported_only_on_the_run_it_happens(self):
         # This is what decides whether the inference pass runs: a report

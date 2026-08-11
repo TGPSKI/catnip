@@ -923,10 +923,18 @@ def main(argv=None):
     # reports as a side effect is a query nobody can run twice safely.
     if not (args.digest or args.stdout):
         transitions = settle(reports_dir, store, cfg)
+        # `--transitions` makes stdout a machine surface, so the notices go
+        # to stderr there. They were on stdout ahead of the JSON, which
+        # `json.load` rejects — on exactly the runs this flag exists to
+        # report, and nowhere else. Anything reading it as the first mover
+        # on a settling cycle failed; the tannery only escaped because its
+        # report writer runs the sweep first, leaving nothing to announce.
+        notices = sys.stderr if args.transitions else sys.stdout
         for t in transitions:
             print(f"Settled: {t['period']}"
                   + ("" if t["recomputed"] else " (promoted as written; the "
-                                                "store no longer reaches it)"))
+                                                "store no longer reaches it)"),
+                  file=notices)
         if args.transitions:
             # Both, because they answer different questions. `settled` is
             # the trigger — what became final in this call. `known` is the

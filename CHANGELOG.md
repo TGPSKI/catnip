@@ -37,7 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store. `--end` pins the window to a fixed day, which is what makes a
   digest recorded earlier comparable at all.
 - **`catnip report --transitions`** prints, as JSON, the periods that became
-  settled in this call and every settled period on disk. The first is the
+  settled in this call and every settled period on disk. Only JSON: the
+  `Settled: ...` notices go to stderr under this flag, because a consumer
+  parsing stdout would otherwise fail on exactly the runs that report a
+  transition and succeed on every other one. The first is the
   trigger; the second is the record, for a consumer that was not running
   when the transition happened.
 - **The tannery queues inference when a report settles, not on a weekday.**
