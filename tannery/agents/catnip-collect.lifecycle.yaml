@@ -5,11 +5,15 @@ agent: catnip-collect
 # each one recomputes the unsettled report from corrected data.
 # :07 rather than the hour, so this is not competing with every
 # other cron on the machine. leather's scheduler has no jitter of
-# its own - the systemd timer's RandomizedDelaySec has no
-# equivalent here.
+# its own: internal/scheduler/cron.go computes the next fire time by
+# incremental matching with no random offset, and there is no
+# jitter field on a lifecycle. `catnip run --jitter` carries it
+# instead, so the timeouts below cover a 40-minute wait plus a
+# ~50-minute fetch, in that order:
+#   catnip_run tool timeout 6600s < tool_timeout < timeout
 schedule: "7 */6 * * *"
-timeout: 6600s
-tool_timeout: 6000s
+timeout: 7800s
+tool_timeout: 7200s
 tool_rounds: 12
 
 output:

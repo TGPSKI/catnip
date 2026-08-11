@@ -147,6 +147,9 @@ a complete plist to adapt. Two things to get right:
   is the `Persistent=true` equivalent. Leave `RunAtLoad` false.
 - Six-hourly is an *array* of `StartCalendarInterval` dicts, one per
   hour; a single dict runs once a day.
+- launchd has no `RandomizedDelaySec`. Add `--jitter 2400` to
+  `ProgramArguments` for the spread systemd gets from the timer — and
+  never under systemd, which would then wait twice.
 
 ## Step 6: leather tannery
 

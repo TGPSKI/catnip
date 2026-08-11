@@ -44,7 +44,9 @@ Getting started
   config          Show the resolved configuration and every path it implies
 
 Collecting
-  run             fetch -> analyze -> history -> totals -> verify (the timer target)
+  run             fetch -> analyze -> history -> totals -> verify (the timer target;
+                  --jitter N waits a random 0..N seconds first, for schedulers
+                  with no randomized delay of their own — never with systemd's)
   fetch           Collect raw API data into a new run directory (--dry-run to preview)
   analyze         Turn a run's raw JSON into analysis CSVs (default: newest run)
   history         Ingest runs into the permanent history store
@@ -171,13 +173,42 @@ PY
   # effect of collecting.
   run)
     QUIET=false
+    JITTER=0
     ARGS=()
     while (($#)); do
       case "$1" in
         --quiet) QUIET=true; shift ;;
+        # Not `shift 2 || true`: with one argument left that shift fails and
+        # shifts nothing, so the loop reads --jitter again, forever.
+        --jitter)
+          [[ $# -ge 2 ]] || { echo "catnip: --jitter needs a value in seconds" >&2; exit 2; }
+          JITTER="$2"; shift 2 ;;
+        --jitter=*) JITTER="${1#*=}"; shift ;;
         *) ARGS+=("$1"); shift ;;
       esac
     done
+
+    # Start-time variability for schedulers that have none of their own.
+    # systemd has RandomizedDelaySec and does not need this; leather's cron
+    # fires at the exact matching minute (internal/scheduler/cron.go computes
+    # the next time by incremental matching, with no random offset anywhere),
+    # and launchd's StartCalendarInterval is equally exact. Without it every
+    # tannery on every machine hits the API at :07.
+    #
+    # Never combine the two. A unit that already carries RandomizedDelaySec
+    # and also passes --jitter waits twice, and the second wait is invisible
+    # in `systemctl list-timers`.
+    if ! [[ "$JITTER" =~ ^[0-9]+$ ]]; then
+      echo "catnip: --jitter takes a whole number of seconds, got '${JITTER}'" >&2
+      exit 2
+    fi
+    if ((JITTER > 0)); then
+      # $RANDOM is a bashism and this script is bash. The cron line printed by
+      # `catnip timer cron` cannot use it — cron runs commands under /bin/sh.
+      wait=$((RANDOM % (JITTER + 1)))
+      echo "catnip run: waiting ${wait}s before collecting (jitter up to ${JITTER}s)" >&2
+      sleep "$wait"
+    fi
 
     log="$(mktemp)"; trap 'rm -f "$log"' EXIT
     step() {

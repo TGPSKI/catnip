@@ -36,6 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`catnip report --digest`** prints the window digest for the current
   store. `--end` pins the window to a fixed day, which is what makes a
   digest recorded earlier comparable at all.
+- **`catnip run --jitter <seconds>`** waits a random 0..N seconds before
+  collecting, for schedulers that have no randomized delay of their own.
+  leather's cron fires at the exact matching minute —
+  `internal/scheduler/cron.go` computes the next fire time by incremental
+  matching, no lifecycle field shifts it — and launchd's
+  `StartCalendarInterval` is equally exact, so without this every tannery on
+  every machine hits the API at :07. The tannery's collect tool now runs
+  `catnip run --quiet --jitter 2400`, and its timeouts grew to cover the
+  wait plus the fetch: `catnip_run` 5400s → 6600s, lifecycle `tool_timeout`
+  6000s → 7200s, `timeout` 6600s → 7800s. Never pass it under systemd, which
+  already has `RandomizedDelaySec`: the run would wait twice, and the second
+  wait is invisible to `systemctl list-timers`.
 - **`catnip report --transitions`** prints, as JSON, the periods that became
   settled in this call and every settled period on disk. The first is the
   trigger; the second is the record, for a consumer that was not running

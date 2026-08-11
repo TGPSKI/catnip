@@ -2,13 +2,15 @@
   "tools": [
     {
       "name": "catnip_run",
-      "description": "Run the full catnip pipeline: fetch -> analyze -> history -> totals -> verify. Measured at 41 minutes for 111 repos; the fetch is serial so it grows with the account.",
+      "description": "Run the full catnip pipeline: fetch -> analyze -> history -> totals -> verify. Measured at 41 minutes for 111 repos; the fetch is serial so it grows with the account. Waits a random 0-40 minutes first: leather's cron fires at the exact matching minute and has no randomized delay, so without this every tannery hits the API at :07. The wait is inside this tool's timeout, which is sized for both.",
       "command": "catnip",
       "args": [
         "run",
-        "--quiet"
+        "--quiet",
+        "--jitter",
+        "2400"
       ],
-      "timeout_seconds": 5400,
+      "timeout_seconds": 6600,
       "output_cap_bytes": 8000
     },
     {

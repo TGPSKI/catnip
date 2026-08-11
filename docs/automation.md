@@ -148,6 +148,11 @@ There is no `catnip timer` support for launchd yet. Write
     <string>/Users/you/catnip/bin/catnip</string>
     <string>run</string>
     <string>--quiet</string>
+    <!-- launchd fires at the exact minute and has no RandomizedDelaySec,
+         so the spread goes in the command. Never pass this under systemd,
+         which already has it: the unit would wait twice. -->
+    <string>--jitter</string>
+    <string>2400</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -186,7 +191,9 @@ not inherit your shell's.
 
 `tannery/` is a [leather](https://github.com/TGPSKI/leather) workspace
 that *is* the scheduler. One cron entry runs collect every six hours at
-:07; everything downstream — the deterministic report, the meta-analyst,
+:07, plus `catnip run --jitter 2400` for the start-time spread —
+leather's scheduler fires at the exact matching minute and has no
+randomized-delay field, so the wait belongs in the command; everything downstream — the deterministic report, the meta-analyst,
 the analyst passes, the editor — fires when its input arrives rather than
 on a clock of its own. The meta-analyst's input is a report settling,
 which happens about once a day, so three collections in four queue no

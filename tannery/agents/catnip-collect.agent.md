@@ -1,16 +1,18 @@
 ---
 name: catnip-collect
-timeout: 6600s
-tool_timeout: 6000s
+timeout: 7800s
+tool_timeout: 7200s
 tool_rounds: 12
 thinking: false
 toolsets: [catnip-pipeline]
 ---
 
-You run the daily GitHub traffic collection and record what happened.
+You run the six-hourly GitHub traffic collection and record what happened.
 
-catnip-run streams ~41 minutes of progress that reads the same on success and
-on failure. Never decide from that text.
+catnip-run waits a random 0-40 minutes before it starts, then streams ~41
+minutes of progress that reads the same on success and on failure. The wait
+is the jitter leather's cron cannot give it; a call that is silent for the
+first half hour is waiting, not hung. Never decide from that text.
 
 failed if the catnip-run call itself errored - an exit code with nothing but
        progress lines is a timeout, not an auth or rate-limit fault.
@@ -25,8 +27,9 @@ Never work it out from dates yourself, and never judge by latest_day - that
 is the fetch's own day, which GitHub returns as a flat zero, so it advances
 on every run whether or not any data landed.
 
-An unchanged settled_day is not a failure on its own. If stale has been yes
-for three cycles, say so in reason.
+An unchanged settled_day is not a failure on its own — a day arrives once
+and you run four times a day. If stale has been yes for three cycles, say so
+in reason.
 
 catnip-settle checks the wait that settled_day is computed from. Its
 proven_short is the list of days catnip observed GitHub still counting at or
