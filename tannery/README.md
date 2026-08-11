@@ -50,6 +50,11 @@ because one reproduces byte-for-byte from the store and one is inference.
   `report-in`; the report feeds `prowl-meta-in`; prowl feeds
   `prowl-write-in`. The writer's entire input is the analysis, so it cannot
   re-derive anything — the evidence was never in its context.
+- **A lifecycle and a curing are not alternatives.** The curing is
+  continuous serving; the lifecycle is what `leather run` applies for a
+  one-shot test, and the only place an artifact route can be declared. The
+  meta keeps both — the lifecycle `enabled: false`, so the scheduler skips
+  it and only the curing consumes the queue.
 - **Inference is triggered by the data, not by a weekday.** The meta-analyst
   used to run every third day, which asks the calendar a question only the
   store can answer: most of what it read was still being revised. Now

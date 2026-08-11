@@ -44,7 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/prowl-onsettle.py` enqueues one meta-analysis cycle on the new
   `prowl-meta-in` queue when a period settles, and nothing otherwise; the
   report agent calls it in a turn of its own. `catnip-prowl-meta` loses its
-  `22 8 */3 * *` cron and becomes a curing. A period settles about once a
+  `22 8 */3 * *` cron and gains a curing. Its lifecycle file stays, with
+  `enabled: false`: serving is the curing, and the lifecycle is the test and
+  validation surface `leather run` applies, carrying the timeouts and the
+  dated `.state/artifacts/` route that a curing's `output:` cannot express.
+  Disabled rather than deleted because the scheduler skips a disabled agent
+  before registration, so it cannot become a second consumer of
+  `prowl-meta-in` — two consumers share one queue, split items
+  nondeterministically, and nothing validates against it. A period settles about once a
   day and collection now runs four times, so three runs in four report
   `queued 0 cycle(s)` — the healthy answer, not a skipped step. Inference
   over a window GitHub is still revising rests on figures that will have

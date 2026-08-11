@@ -1,0 +1,24 @@
+agent: catnip-prowl-meta
+# Serving is the curing (curings/prowl-meta.curing.yaml), which consumes
+# prowl-meta-in the moment a report settles. This file is the other half:
+# the test and validation surface. `leather run` applies it —
+# internal/cli/cmd_run.go:78 ApplyLifecycleFile, with no `enabled` check —
+# so `make run-meta` gets these timeouts and writes the dated artifact a
+# curing's `output:` cannot express (it takes notify: and queue: only).
+#
+# enabled: false keeps the scheduler out of it. cmd_serve.go:962 skips a
+# disabled agent before registration, so this cannot become a second
+# consumer of prowl-meta-in alongside the curing — two consumers share one
+# *FileQueue, split items nondeterministically, and nothing validates it.
+# The schedule below is inert for the same reason, and is required only
+# because the lifecycle parser refuses a record without one
+# (internal/agent/lifecycle.go:399 requireSchedule).
+enabled: false
+schedule: "22 8 */3 * *"
+timeout: 900s
+tool_timeout: 420s
+tool_rounds: 12
+
+output:
+  - type: file
+    path: .state/artifacts/{{.date}}-catnip-prowl-meta.txt
