@@ -102,53 +102,5 @@ class RenderTests(unittest.TestCase):
         self.assertLess(int(out), timer.CRON_JITTER_SECONDS)
 
 
-class JitterFlagTests(unittest.TestCase):
-    """`catnip run --jitter`, for schedulers with no randomized delay.
-
-    systemd has `RandomizedDelaySec`. leather's cron fires at the exact
-    matching minute — its scheduler computes the next time by incremental
-    matching and never adds an offset — and launchd's
-    `StartCalendarInterval` is equally exact, so without this every
-    tannery on every machine hits the API at the same second.
-    """
-
-    CATNIP = Path(__file__).resolve().parents[1] / "bin" / "catnip"
-
-    def run_it(self, *args):
-        return subprocess.run([str(self.CATNIP), "run", *args],
-                              capture_output=True, text=True, timeout=30)
-
-    def test_a_value_that_is_not_seconds_is_refused(self):
-        r = self.run_it("--jitter", "abc")
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("whole number of seconds", r.stderr)
-
-    def test_a_missing_value_is_refused_rather_than_looped_on(self):
-        # `shift 2` with one argument left shifts nothing and fails, so a
-        # parser that tolerates it reads --jitter forever. It ran for two
-        # minutes before anything noticed.
-        r = self.run_it("--jitter")
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("needs a value", r.stderr)
-
-    def test_it_waits_within_the_bound_before_collecting(self):
-        # An unreadable config fails the fetch immediately, so this times
-        # the wait and nothing else.
-        r = self.run_it("--jitter", "2", "--config", "/nonexistent/x.conf")
-        self.assertIn("before collecting", r.stderr)
-        waited = int(r.stderr.split("waiting ")[1].split("s ")[0])
-        self.assertLessEqual(waited, 2)
-
-    def test_the_systemd_unit_never_carries_it(self):
-        # A unit with RandomizedDelaySec that also passed --jitter would
-        # wait twice, and the second wait is invisible to list-timers.
-        with tempfile.TemporaryDirectory() as tmp:
-            path = write_config(Path(tmp))
-            units = timer.render(Config.load(path, env={}), str(path))
-            self.assertNotIn("--jitter", units["catnip.service"])
-            self.assertNotIn("--jitter", timer.cron_line(
-                Config.load(path, env={}), str(path)))
-
-
 if __name__ == "__main__":
     unittest.main()

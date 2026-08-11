@@ -7,7 +7,7 @@ for what the report cannot say whenever a report settles.
 
 | agent | when | does |
 |---|---|---|
-| `catnip-collect` | every 6h at :07 +0-40m | `catnip run --jitter 2400`, then checks the data landed |
+| `catnip-collect` | every 6h at :07 | `catnip run`, then checks the data landed |
 | `catnip-report` | when collect delivers | writes the deterministic report, queues a cycle if one settled |
 | `catnip-prowl-meta` | when a report settles | sizes the cycle, seeds N analyst briefs |
 | `catnip-prowl` | one run per brief | investigates one angle |
@@ -50,14 +50,6 @@ because one reproduces byte-for-byte from the store and one is inference.
   `report-in`; the report feeds `prowl-meta-in`; prowl feeds
   `prowl-write-in`. The writer's entire input is the analysis, so it cannot
   re-derive anything — the evidence was never in its context.
-- **The start-time spread is in the command, not the schedule.** leather's
-  cron fires at the exact matching minute — `internal/scheduler/cron.go`
-  computes the next time by incremental matching and never adds an offset,
-  and a lifecycle has no jitter field — so `catnip run --jitter 2400` waits
-  a random 0-40 minutes first. Without it every tannery on every machine
-  hits the API at :07. The wait is inside the tool's timeout, which is why
-  `catnip_run` is 6600s against a ~41-minute fetch. Under systemd the timer
-  owns this instead: passing both makes the run wait twice.
 - **Inference is triggered by the data, not by a weekday.** The meta-analyst
   used to run every third day, which asks the calendar a question only the
   store can answer: most of what it read was still being revised. Now
