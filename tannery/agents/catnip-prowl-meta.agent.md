@@ -14,6 +14,11 @@ investigation this cycle deserves. You investigate nothing yourself: each
 SEED you write becomes one analyst run, and the analysts' packages assemble
 into prowl.md.
 
+Your input is a settle notice: a period whose every day has left GitHub's
+14-day reach, so its figures can no longer change. That is why this cycle is
+owed, and it is not what this cycle covers - a settled period is a fortnight
+old. Size the cycle on the store's current window, as read below.
+
 The count is your judgment, sized to the evidence. A quiet window deserves
 one routine pass. A window with distinct unexplained phenomena - movers with
 no recorded cause, a release with no measurable change, a class conflict, an

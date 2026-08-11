@@ -73,9 +73,15 @@ DEFAULTS = {
     # in the store at its settled value, so trimming loses the revision
     # history and nothing else.
     "CATNIP_SETTLE_LOG_DAYS": "90",
-    # systemd timer cadence (OnCalendar= syntax) and jitter.
-    "CATNIP_TIMER_ONCALENDAR": "daily",
-    "CATNIP_TIMER_RANDOM_DELAY": "1h",
+    # systemd timer cadence (OnCalendar= syntax) and jitter. Every six
+    # hours, because GitHub keeps revising a day for `CATNIP_SETTLE_HOURS`
+    # after it closes and a daily read places a revision no more precisely
+    # than "somewhere in the last 24 hours". Four reads a day bound it to
+    # six. The jitter is additive in systemd, so 40m spreads the start
+    # uniformly over 40 minutes — the +/-20m variability, measured from
+    # the middle of that spread.
+    "CATNIP_TIMER_ONCALENDAR": "*-*-* 00/6:00:00",
+    "CATNIP_TIMER_RANDOM_DELAY": "40m",
 }
 
 BOOL_KEYS = {k for k, v in DEFAULTS.items() if v in ("true", "false")}

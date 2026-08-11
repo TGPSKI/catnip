@@ -25,7 +25,7 @@ decides.
 
 | Want | Mechanism |
 |---|---|
-| Collection — data lands daily, they read it in the TUI | systemd timer, cron, or launchd — Steps 2–5 |
+| Collection — data lands every six hours, they read it in the TUI | systemd timer, cron, or launchd — Steps 2–5 |
 | Collection *and* a written report, and a periodic analyst pass over it | leather tannery — Step 6 |
 
 The tannery is strictly more machinery: it needs `leather` on `PATH` and
@@ -125,9 +125,13 @@ crontab -e               # the user pastes it
 
 Two limitations to state, not bury:
 
-- **cron cannot catch up.** If the machine is off at the scheduled time,
-  that day is lost — permanently, given the 14-day window. On a laptop,
-  schedule twice a day.
+- **cron cannot catch up.** If the machine is off at a scheduled time,
+  that read is lost. The default runs every six hours, so the next one
+  covers for it; a machine off for a whole day loses that day
+  permanently, given the 14-day window.
+- **cron has no jitter.** The printed line sleeps a random part of 40
+  minutes first, using `awk` — `$RANDOM` is a bashism and cron runs the
+  command under `/bin/sh`.
 - **cron's `PATH` is minimal.** If `gh` is not in `/usr/bin`, add a
   `PATH=` line at the top of the crontab. This is the most common reason
   a cron-driven catnip does nothing at all.
@@ -141,16 +145,20 @@ a complete plist to adapt. Two things to get right:
   inherit a shell's.
 - `StartCalendarInterval` already runs a missed interval on wake, which
   is the `Persistent=true` equivalent. Leave `RunAtLoad` false.
+- Six-hourly is an *array* of `StartCalendarInterval` dicts, one per
+  hour; a single dict runs once a day.
 
 ## Step 6: leather tannery
 
 `tannery/` in the clone is a [leather](https://github.com/TGPSKI/leather)
-workspace that *is* the scheduler. Its own cron runs collect daily at
-05:07 and the meta-analyst every third day at 08:22; everything
-downstream — the deterministic report, the analyst passes, the editor —
-fires when its input arrives rather than on a clock. There is no
-`catnip.timer` in this arrangement. `tannery/README.md` documents the
-chain; this step only gets it running on the user's machine.
+workspace that *is* the scheduler. Its own cron runs collect every six
+hours at :07; everything downstream — the deterministic report, the
+meta-analyst, the analyst passes, the editor — fires when its input
+arrives rather than on a clock. The meta-analyst's input is a report
+settling, which happens about once a day, so most collections queue no
+inference. There is no `catnip.timer` in this arrangement.
+`tannery/README.md` documents the chain; this step only gets it running
+on the user's machine.
 
 Output lands beside the data: `report.md` from the report agent,
 `prowl.md` from the analyst chain.
@@ -313,8 +321,7 @@ leather status --config config.yaml
 state dir:
 
 ```
-catnip-collect     success   last=2026-08-08 05:07:01  next=2026-08-09 05:07:00  runs=1
-catnip-prowl-meta  pending   last=never                next=2026-08-10 08:22:00  runs=0
+catnip-collect     success   last=2026-08-08 06:07:01  next=2026-08-08 12:07:00  runs=4
 ```
 
 **It reports the schedule and the last outcome, not liveness.** Every
@@ -337,7 +344,7 @@ command.)
 | Tannery: `active`, but `leather status` lists no agents | Agents failed to load — `systemctl --user status catnip-tannery.service` for the startup error, then `make validate` |
 | Tannery: `inactive`, but `next=` looks fine | The scheduler is dead and `next=` is the value it persisted before dying. This is the failure the two-command check exists to catch |
 | Tannery: `next=` is in the past | Same failure, one interval later. Nothing advances a schedule that has no process behind it |
-| Tannery: `last=` is days old on a daily agent | Collect is failing, not missing. `catnip runs` for the data, the service log for the cause |
+| Tannery: `last=` is a day old on the six-hourly collect agent | Collect is failing, not missing. `catnip runs` for the data, the service log for the cause |
 
 Optionally, fire one now rather than waiting a day:
 
@@ -393,8 +400,10 @@ Onboarding is done. Tell the user, in this order:
 
 If they installed the tannery, add:
 
-6. **`report.md` appears daily, `prowl.md` every third day** beside the
-   data. They are separate files because one reproduces byte-for-byte
-   from the store and one is inference.
+6. **`report.md` is rewritten on every collection; `prowl.md` appears
+   when a report period settles**, both beside the data. They are
+   separate files because one reproduces byte-for-byte from the store and
+   one is inference. A report directory ending `.unsettled` is the draft
+   for a period GitHub can still revise.
 7. **`.agents/skills/catnip-prowl` does the same hunt on demand**, in
    this conversation, without waiting for the cycle.

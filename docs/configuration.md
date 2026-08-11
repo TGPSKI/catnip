@@ -91,8 +91,8 @@ off stats.
 | `CATNIP_RETAIN_DAYS` | `30` | How long run directories survive `catnip prune`. |
 | `CATNIP_SETTLE_HOURS` | `36` | How long after a day closes GitHub is still adding counts to it. No window ends inside this wait. 36 is a measured floor; a lower value is ignored. `catnip settle` measures what this account actually does. |
 | `CATNIP_SETTLE_LOG_DAYS` | `90` | How many days of settle readings to keep in `stats/history/daily_snapshots.jsonl`. That log is a measurement, not a record: every day in it is already in the store at its settled value. |
-| `CATNIP_TIMER_ONCALENDAR` | `daily` | systemd `OnCalendar=` syntax. |
-| `CATNIP_TIMER_RANDOM_DELAY` | `1h` | Jitter, so you are not hitting the API at the same second as everyone else. |
+| `CATNIP_TIMER_ONCALENDAR` | `*-*-* 00/6:00:00` | systemd `OnCalendar=` syntax. Every six hours: GitHub keeps revising a day for the wait above, and a daily read places a revision no more precisely than "somewhere in the last 24 hours". Check a value with `systemd-analyze calendar '<value>'`. |
+| `CATNIP_TIMER_RANDOM_DELAY` | `40m` | Jitter, so you are not hitting the API at the same second as everyone else. Additive: the `OnCalendar` time is the earliest start and this is the width of the window after it, which is ±20m measured from its middle. |
 
 Retention applies to run directories only. The history store is never
 pruned, and `catnip prune` will not delete a run whose days are not in it

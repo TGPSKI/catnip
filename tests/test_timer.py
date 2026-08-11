@@ -5,6 +5,7 @@ No systemd required: rendering is pure text substitution, and the two
 properties that matter — the config path is pinned into the unit, and
 Persistent=true survives a sleeping machine — are checkable as strings.
 """
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -67,11 +68,38 @@ class RenderTests(unittest.TestCase):
         for name, text in units.items():
             self.assertNotIn("@CATNIP", text, f"{name} still has a placeholder")
 
+    def test_the_default_cadence_is_six_hourly_with_jitter(self):
+        # GitHub keeps revising a day for CATNIP_SETTLE_HOURS after it
+        # closes. A daily read places a revision no more precisely than
+        # "somewhere in the last 24 hours"; four reads a day bound it to
+        # six, and the jitter keeps the account off everyone else's
+        # top-of-the-hour.
+        unit = self.render()[0]["catnip.timer"]
+        self.assertIn("OnCalendar=*-*-* 00/6:00:00", unit)
+        self.assertIn("RandomizedDelaySec=40m", unit)
+
     def test_cron_line_carries_the_config_and_binary(self):
         path = write_config(self.root)
         line = timer.cron_line(Config.load(path, env={}), str(path))
         self.assertIn(f"CATNIP_CONFIG={path}", line)
         self.assertIn("run --quiet", line)
+
+    def test_the_cron_line_runs_six_hourly_and_jitters_itself(self):
+        # cron has no RandomizedDelaySec, so the line sleeps first.
+        path = write_config(self.root)
+        line = timer.cron_line(Config.load(path, env={}), str(path))
+        self.assertIn("0 */6 * * *", line)
+        self.assertIn(timer.CRON_JITTER, line)
+
+    def test_the_cron_jitter_runs_under_sh_not_only_bash(self):
+        # $RANDOM is a bashism. crontab runs the command under /bin/sh,
+        # where it expands to nothing and the sleep becomes a syntax error
+        # — every six hours, in a log nobody reads.
+        command = timer.CRON_JITTER.replace("sleep ", "echo ", 1)
+        out = subprocess.run(["/bin/sh", "-c", command], capture_output=True,
+                             text=True, check=True).stdout.strip()
+        self.assertTrue(out.isdigit(), out)
+        self.assertLess(int(out), timer.CRON_JITTER_SECONDS)
 
 
 if __name__ == "__main__":

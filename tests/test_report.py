@@ -261,16 +261,45 @@ class GuardTests(unittest.TestCase):
 
 
 class WriteTests(unittest.TestCase):
-    def test_the_path_names_the_period_then_the_write(self):
+    def test_the_path_names_the_period_and_says_it_is_a_draft(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = {"repos": {"a": {"clones": {"2026-08-06": [1, 1]}, "views": {}}}}
             out = report.write_report("body\n", Path(tmp), store, "2w", None, NOW)
-            self.assertEqual(out.name, f"2026-08-06-2w.{NOW.strftime(report.STAMP_FMT)}")
+            self.assertEqual(out.name, "2026-08-06-2w.unsettled")
             meta = json.loads((out / "meta.json").read_text())
             self.assertEqual(meta["report_name"], "2026-08-06-2w")
             self.assertEqual(meta["latest_day"], "2026-08-06")
+            self.assertEqual(meta["status"], "unsettled")
             self.assertEqual(meta["provenance"], "measured")
             self.assertEqual((out / "report.md").read_text(), "body\n")
+
+    def test_the_draft_is_one_directory_rewritten_not_a_series(self):
+        # Four collections a day, each writing its own directory, buries the
+        # current answer in supersedings within a week.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = {"repos": {"a": {"clones": {"2026-08-06": [1, 1]}, "views": {}}}}
+            report.write_report("first\n", Path(tmp), store, "2w", None, NOW)
+            out = report.write_report("second\n", Path(tmp), store, "2w", None,
+                                      NOW + timedelta(hours=6))
+            self.assertEqual([p.name for p in sorted(Path(tmp).iterdir())],
+                             ["2026-08-06-2w.unsettled"])
+            self.assertEqual((out / "report.md").read_text(), "second\n")
+            meta = json.loads((out / "meta.json").read_text())
+            self.assertEqual(meta["first_written"], NOW.strftime(report.STAMP_FMT))
+            self.assertEqual(meta["last_recomputed"],
+                             (NOW + timedelta(hours=6)).strftime(report.STAMP_FMT))
+
+    def test_a_document_states_which_kind_it_is(self):
+        # The name says it, and a name is not what gets pasted into a chat.
+        cfg = Config.load(None)
+        store = {"repos": {"a": {"clones": {"2026-08-06": [1, 1]}, "views": {}}}}
+        draft = report.build_report(store, cfg, "2w", None, NOW)
+        self.assertIn("UNSETTLED", draft)
+        self.assertIn("| status |", draft)
+        final = report.build_report(store, cfg, "2w", None,
+                                    NOW + timedelta(days=20), end="2026-08-06")
+        self.assertIn("SETTLED", final)
+        self.assertNotIn("UNSETTLED", final)
 
     def test_meta_records_the_day_the_report_covers(self):
         # meta's latest_day is what the next cycle's guard compares against,
@@ -288,71 +317,111 @@ class WriteTests(unittest.TestCase):
             self.assertEqual(meta["settle_hours"], 36)
 
 
-class PromotionTests(unittest.TestCase):
+class SettlingTests(unittest.TestCase):
     """Which copy of a period is the answer, and when it becomes one."""
+
+    LATER = NOW + timedelta(days=20)
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self._tmp.name)
+        self.cfg = Config.load(None)
 
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _store(self, day):
-        return {"repos": {"a": {"clones": {day: [1, 1]}, "views": {}}}}
+    def _store(self, day, clones=(1, 1)):
+        return {"repos": {"a": {"clones": {day: list(clones)}, "views": {}}}}
 
     def _write(self, day, when, timeframe="2w"):
         return report.write_report("body\n", self.dir, self._store(day),
                                    timeframe, None, when)
 
-    def test_a_period_still_inside_the_traffic_window_stays_stamped(self):
+    def test_a_period_still_inside_the_traffic_window_does_not_settle(self):
         self._write("2026-08-06", NOW)
-        self.assertEqual(report.promote(self.dir, NOW), [])
-        self.assertTrue((self.dir / f"2026-08-06-2w.{NOW.strftime(report.STAMP_FMT)}"
-                         / "report.md").is_file())
+        self.assertEqual(report.settle(self.dir, self._store("2026-08-06"),
+                                       self.cfg, NOW), [])
+        self.assertTrue((self.dir / "2026-08-06-2w.unsettled" / "report.md").is_file())
+        self.assertFalse((self.dir / "2026-08-06-2w").exists())
 
-    def test_a_period_past_the_traffic_window_is_promoted(self):
+    def test_a_period_past_the_traffic_window_settles(self):
         self._write("2026-08-06", NOW)
-        later = NOW + timedelta(days=20)
-        moved = report.promote(self.dir, later)
-        self.assertEqual([t.name for _, t in moved], ["2026-08-06-2w"])
-        self.assertEqual((self.dir / "2026-08-06-2w" / "report.md").read_text(), "body\n")
+        moved = report.settle(self.dir, self._store("2026-08-06"), self.cfg,
+                              self.LATER)
+        self.assertEqual([m["period"] for m in moved], ["2026-08-06-2w"])
         meta = json.loads((self.dir / "2026-08-06-2w" / "meta.json").read_text())
-        self.assertTrue(meta["promoted"])
         self.assertEqual(meta["status"], "settled")
+        self.assertTrue(meta["promoted"])
+        self.assertTrue(meta["recomputed_on_settling"])
+        # One answer per period: the draft it replaces is gone.
+        self.assertFalse((self.dir / "2026-08-06-2w.unsettled").exists())
 
-    def test_the_newest_recomputation_is_the_one_promoted(self):
-        # Two passes over one period: the second was computed from a store
-        # GitHub had since corrected, so it is the one that survives.
+    def test_the_settled_copy_is_recomputed_not_renamed(self):
+        # The draft's figures are the whole reason the period was
+        # provisional: GitHub was still correcting them. Promoting the
+        # draft would publish the numbers the wait was meant to outlast.
         self._write("2026-08-06", NOW)
-        self._write("2026-08-06", NOW + timedelta(days=1))
-        report.promote(self.dir, NOW + timedelta(days=20))
-        meta = json.loads((self.dir / "2026-08-06-2w" / "meta.json").read_text())
-        self.assertEqual(meta["last_recomputed"],
-                         (NOW + timedelta(days=1)).strftime(report.STAMP_FMT))
+        revised = self._store("2026-08-06", (9, 4))
+        report.settle(self.dir, revised, self.cfg, self.LATER)
+        text = (self.dir / "2026-08-06-2w" / "report.md").read_text()
+        self.assertIn("**9 clones**", text)
+        self.assertIn("SETTLED", text)
 
-    def test_superseded_recomputations_survive_promotion(self):
-        # The record of what was believed on each date is the reason the
-        # stamped form exists.
+    def test_settling_happens_once(self):
         self._write("2026-08-06", NOW)
-        self._write("2026-08-06", NOW + timedelta(days=1))
-        report.promote(self.dir, NOW + timedelta(days=20))
-        self.assertTrue((self.dir / f"2026-08-06-2w.{NOW.strftime(report.STAMP_FMT)}"
-                         / "report.md").is_file())
+        store = self._store("2026-08-06")
+        report.settle(self.dir, store, self.cfg, self.LATER)
+        self.assertEqual(report.settle(self.dir, store, self.cfg, self.LATER), [])
 
-    def test_promotion_happens_once(self):
+    def test_a_store_that_cannot_reach_the_period_promotes_the_draft(self):
+        # A stale report beats no report: without the days there is nothing
+        # to recompute from, and the draft is the best answer that exists.
         self._write("2026-08-06", NOW)
-        later = NOW + timedelta(days=20)
-        report.promote(self.dir, later)
-        self._write("2026-08-06", later)
-        self.assertEqual(report.promote(self.dir, later), [])
+        moved = report.settle(self.dir, self._store("2026-09-01"), self.cfg,
+                              self.LATER)
+        self.assertEqual([m["recomputed"] for m in moved], [False])
+        self.assertEqual((self.dir / "2026-08-06-2w" / "report.md").read_text(),
+                         "body\n")
+
+    def test_a_draft_from_an_older_version_still_settles(self):
+        # One directory per write is what earlier versions wrote. The
+        # newest of them is the one the period is recomputed against.
+        stamped = self.dir / f"2026-08-06-2w.{NOW.strftime(report.STAMP_FMT)}"
+        stamped.mkdir(parents=True)
+        (stamped / "report.md").write_text("old\n")
+        (stamped / "meta.json").write_text(json.dumps({"written": "20260806T120000Z"}))
+        moved = report.settle(self.dir, self._store("2026-08-06"), self.cfg,
+                              self.LATER)
+        self.assertEqual([m["period"] for m in moved], ["2026-08-06-2w"])
+        self.assertTrue((self.dir / "2026-08-06-2w" / "report.md").is_file())
+
+    def test_settling_never_deletes_what_the_prowl_chain_published(self):
+        # prowl.md is written into the report's own directory by another
+        # program. Retiring the draft must carry it across, not drop it.
+        draft = self._write("2026-08-06", NOW)
+        (draft / "prowl.md").write_text("inference\n")
+        report.settle(self.dir, self._store("2026-08-06"), self.cfg, self.LATER)
+        self.assertEqual((self.dir / "2026-08-06-2w" / "prowl.md").read_text(),
+                         "inference\n")
 
     def test_two_timeframes_over_one_day_are_two_reports(self):
         self._write("2026-08-06", NOW, timeframe="2w")
         self._write("2026-08-06", NOW, timeframe="1w")
-        report.promote(self.dir, NOW + timedelta(days=20))
+        report.settle(self.dir, self._store("2026-08-06"), self.cfg, self.LATER)
         self.assertTrue((self.dir / "2026-08-06-2w").is_dir())
         self.assertTrue((self.dir / "2026-08-06-1w").is_dir())
+
+    def test_a_transition_is_reported_only_on_the_run_it_happens(self):
+        # This is what decides whether the inference pass runs: a report
+        # that just became final is new information, and a report that was
+        # already final is not.
+        self._write("2026-08-06", NOW)
+        store = self._store("2026-08-06")
+        self.assertEqual(report.settle(self.dir, store, self.cfg,
+                                       self.LATER - timedelta(days=10)), [])
+        self.assertEqual(len(report.settle(self.dir, store, self.cfg, self.LATER)), 1)
+        self.assertEqual(report.settle(self.dir, store, self.cfg,
+                                       self.LATER + timedelta(days=1)), [])
 
     def test_meta_separates_first_written_from_last_recomputed(self):
         self._write("2026-08-06", NOW)
@@ -371,17 +440,19 @@ class PromotionTests(unittest.TestCase):
         self.assertIn("first written", again)
         self.assertIn("`2026-08-06-2w`", again)
 
-    def test_the_newest_report_is_the_newest_write_not_the_last_name(self):
-        # A promoted period sorts before its own stamped siblings, so
-        # sorting by name hands back a superseded recomputation.
-        self._write("2026-08-06", NOW)
-        self._write("2026-08-06", NOW + timedelta(days=1))
-        report.promote(self.dir, NOW + timedelta(days=20))
+    def test_locate_names_the_period_and_says_whether_it_is_final(self):
+        # A settled period sorts before its own draft by name, so sorting
+        # names hands back the draft it replaced.
+        draft = self._write("2026-08-06", NOW)
+        found = report.locate(self.dir)
+        self.assertEqual(found["name"], "2026-08-06-2w")
+        self.assertFalse(found["promoted"])
+        self.assertTrue(found["report"].startswith(str(draft)))
+        report.settle(self.dir, self._store("2026-08-06"), self.cfg, self.LATER)
         found = report.locate(self.dir)
         self.assertEqual(found["name"], "2026-08-06-2w")
         self.assertTrue(found["promoted"])
-        self.assertEqual(found["meta"]["last_recomputed"],
-                         (NOW + timedelta(days=1)).strftime(report.STAMP_FMT))
+        self.assertEqual(found["meta"]["status"], "settled")
 
     def test_locate_reads_a_legacy_report_too(self):
         out = self.dir / "20260806T090000Z"
@@ -395,14 +466,19 @@ class PromotionTests(unittest.TestCase):
     def test_locate_on_an_empty_directory_is_none(self):
         self.assertIsNone(report.locate(self.dir))
 
-    def test_the_guard_reads_the_stamped_set(self):
-        # A promoted report and a newer stamped recomputation of an older
-        # period both exist; the guard must compare against the newer write.
-        self._write("2026-08-04", NOW - timedelta(days=2))
-        report.promote(self.dir, NOW + timedelta(days=20))
-        self._write("2026-08-06", NOW)
-        prior = report.previous_reports(self.dir)
-        self.assertEqual(report.load_meta(prior[-1])["latest_day"], "2026-08-06")
+    def test_the_guard_compares_against_this_period_not_the_newest_write(self):
+        # Settling writes a fortnight-old period NOW, so the newest write
+        # is routinely about a different window. Comparing this period's
+        # store against that one answers nothing: the store has of course
+        # advanced past a period that is two weeks old, so the guard would
+        # pass on every run and rewrite the draft over identical data.
+        store = self._store("2026-08-06")
+        report.write_report("body\n", self.dir, store, "2w", None, self.LATER)
+        old = self._store("2026-07-20")
+        report.write_report("older\n", self.dir, old, "2w", None,
+                            self.LATER + timedelta(hours=1))
+        last = report.prior_report(self.dir, store, "2w")
+        self.assertEqual(report.load_meta(last)["latest_day"], "2026-08-06")
 
 
 if __name__ == "__main__":

@@ -6,9 +6,9 @@
 
 Clones, views, unique cloners, popular paths, referrers, stars and forks with
 timestamps, releases, pull requests, languages, commit activity — every repo
-you own or administer, collected daily and read in your terminal. Traffic,
-popular paths, referrers and release/push events go into a permanent store
-that is never pruned.
+you own or administer, collected every six hours and read in your terminal.
+Traffic, popular paths, referrers and release/push events go into a permanent
+store that is never pruned.
 
 Python 3.10+ (stdlib only) and the [GitHub CLI](https://cli.github.com). No
 service, no build step, no data leaving your machine.
@@ -60,23 +60,30 @@ make link-agents HARNESSES=".aider"       # or wherever yours looks
 `catnip report` writes deterministic markdown from the store: totals and change, movers with trend, attribution, account events, audience, clone intent, coupling, depth, and data limitations.
 
 Same store and timeframe produce byte-identical output, and every figure is
-tagged `measured`. A second report over an unchanged store refuses to write —
-catnip collects daily, so that would be one finding printed twice. `--force`
-overrides it; `--stdout` prints without writing and is never gated.
+tagged `measured`. A second report over a store that has neither advanced nor
+been corrected refuses to write — that would be one finding printed twice.
+`--force` overrides it; `--stdout` prints without writing and is never gated.
 
 A report is named for the period it covers, and its name says whether the
 figures can still change:
 
 ```
-reports/2026-08-05-2w.20260807T031722Z/   a day in the window can still be revised
-reports/2026-08-05-2w/                    none of them can
+reports/2026-08-05-2w.unsettled/   a day in the window can still be revised
+reports/2026-08-05-2w/             none of them can
 ```
 
-GitHub keeps correcting a day for well over a day after it closes, so a
-report gets recomputed under a new write stamp when the store moves under
-it. The earlier copies stay. Once the period leaves GitHub's 14-day window
-nothing can revise it again, and the newest recomputation is moved to the
-unstamped name. `catnip report --locate` prints the current paths.
+The unsettled copy is one document rewritten on every collection, and it
+opens with a banner saying so. When nothing can revise the period again, it
+is recomputed from the corrected store and written once as the settled
+answer — not renamed, because the draft's figures are exactly what the wait
+existed to outlast.
+
+GitHub keeps correcting a day for well over a day after it closes, so the
+draft is recomputed whenever the store moves under it — up to four times a
+day at the default cadence. Once the period leaves GitHub's 14-day window
+nothing can revise it again, and that transition is also what queues the
+tannery's inference cycle. `catnip report --locate` prints the current
+paths; `catnip report --transitions` prints which periods just settled.
 
 `catnip-prowl` is the inferential pass: hypotheses the report doesn't ask,
 tested against the raw data, refutations reported with the findings. It
@@ -204,13 +211,13 @@ CATNIP_OWNER=octocat
 CATNIP_EXCLUDE=dotfiles *-private
 CATNIP_INCLUDE_FORKS=false
 CATNIP_RETAIN_DAYS=30           
-CATNIP_TIMER_ONCALENDAR=daily
+CATNIP_TIMER_ONCALENDAR=*-*-* 00/6:00:00
 ```
 
 ## Automation
 
 ```bash
-catnip timer install     # systemd --user timer, daily, Persistent=true
+catnip timer install     # systemd --user timer, every 6h, Persistent=true
 catnip timer status      # next run, last result
 catnip timer logs        # journalctl for the service
 ```
@@ -234,9 +241,9 @@ make serve        # run the scheduler
 
 | agent | when | does |
 |---|---|---|
-| `catnip-collect` | daily 05:07 | `catnip run`, then checks it landed |
-| `catnip-report` | daily 06:52 | writes the deterministic report |
-| `catnip-prowl` | every 3rd day 08:22 | hunts what the report does not answer |
+| `catnip-collect` | every 6h at :07 | `catnip run`, then checks it landed |
+| `catnip-report` | when collect delivers | writes the deterministic report |
+| `catnip-prowl` | when a report settles | hunts what the report does not answer |
 
 Each agent is multi-turn and every turn replaces its tool scope, so an agent
 can only reach the tools that turn declares:

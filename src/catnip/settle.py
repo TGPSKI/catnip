@@ -16,12 +16,14 @@ Two rules keep the answer honest:
 - **The same repos in every reading.** A day's readings are summed over
   the repos present in all of them, or a repo added between fetches moves
   the total on its own and reads as GitHub still counting.
-- **A change proves only the age of the reading it followed.** On a daily
-  timer the readings of one day sit ~24h apart, so a value differing
-  between a 19h read and a 43h read changed somewhere in between: the day
-  was unfinished at 19h, and nothing is proven about 36h.
-  `still_moving_at` is that lower bound, `final_by` the upper one, and a
-  wait is contradicted only when the lower bound reaches it.
+- **A change proves only the age of the reading it followed.** The
+  readings of one day sit one collection interval apart, so on a daily
+  timer a value differing between a 19h read and a 43h read changed
+  somewhere in between: the day was unfinished at 19h, and nothing is
+  proven about 36h. `still_moving_at` is that lower bound, `final_by` the
+  upper one, and a wait is contradicted only when the lower bound reaches
+  it. The six-hourly default exists for this: it narrows that gap to six
+  hours, which is what lets a reading land on either side of the wait.
 """
 from __future__ import annotations
 
@@ -159,9 +161,10 @@ def verdict(all_curves, hours=None):
 
     `proven_short` is a day observed still moving at or past the wait, so
     the wait is too low. `unresolved` is a day whose change lands inside a
-    gap straddling the wait — the daily cadence cannot place it, and
-    collecting twice a day would. `confirmed` held its final value before
-    the wait expired. Unresolved is the common case on a daily timer.
+    gap straddling the wait — the cadence cannot place it, and a shorter
+    interval would. `confirmed` held its final value before the wait
+    expired. Unresolved is the common case on a daily timer and the reason
+    the default cadence is six-hourly.
     """
     hours = derive.settle_hours() if hours is None else hours
     proven, unresolved, confirmed, thin = [], [], [], []
@@ -206,9 +209,9 @@ def summary_line(result):
     if result["unresolved"]:
         return (f"No day was proven still counting at {hours}h, but "
                 f"{len(result['unresolved'])} of {result['days_measured']} "
-                f"changed somewhere inside a gap that straddles it. "
-                f"Collecting twice a day would place the change; the wait is "
-                f"not contradicted.")
+                f"changed somewhere inside a gap that straddles it. A "
+                f"shorter collection interval would place the change; the "
+                f"wait is not contradicted.")
     return (f"All {result['days_measured']} measured day(s) held their final "
             f"value before the {hours}h wait expired.")
 

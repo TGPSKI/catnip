@@ -15,33 +15,44 @@ are visibly labelled. Every finding here is tagged `measured`. The skill
 adds `inferred` and `speculative`, and must never quietly promote one to
 the other.
 
-The guard exists for the same reason. catnip collects daily, so the store
-gains at most one day per run: two reports on the same data are not two
-findings, they are the same finding printed twice. The primary gate is
-therefore whether the store's latest observed day has ADVANCED since the
-last report, with a one-day clock floor as a cheap secondary. Both are
-overridable, because a prototype that cannot re-run is not a prototype.
+The guard exists for the same reason. catnip collects every six hours and
+a day arrives once, so most runs add no day at all: two reports on the
+same data are not two findings, they are the same finding printed twice.
+The primary gate is therefore whether the store's latest observed day has
+ADVANCED since the last report, or whether a day that report already
+described has since been revised, with a one-day clock floor as a cheap
+secondary. Both are overridable, because a prototype that cannot re-run
+is not a prototype.
 
 A report is named for the period it covers, not the moment it was written,
 and provisionality is in the name:
 
-    reports/2026-08-05-2w.20260807T031722Z/   a day in the window can still
-                                              be revised
-    reports/2026-08-05-2w/                    none of them can
+    reports/2026-08-05-2w.unsettled/   a day in the window can still be revised
+    reports/2026-08-05-2w/             none of them can
 
-Recomputations of one period sit side by side and nothing is overwritten:
-open the unstamped name for the settled answer, a stamped one to audit
-what was believed on a date. `promote` runs on every invocation, because a
-period settles about two weeks after the cycle that wrote it.
+The unsettled copy is a draft and is rewritten in place: on a six-hourly
+timer a report that took a new directory per write would leave four
+directories a day per period, all but the last superseded within hours,
+and the reader would have to date-sort a directory listing to find the
+answer. The document says which one it is — every unsettled report opens
+with a banner and carries `status` in its provenance table.
+
+`settle` runs on every invocation, because a period stops being revisable
+about two weeks after the cycle that wrote it, not when anything is
+collected. It does not rename the last draft: it recomputes the period
+from the store as it now stands and writes that as the settled answer,
+because the draft was computed from a store GitHub has since corrected —
+which is the whole reason the period was provisional.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from catnip import derive
@@ -58,7 +69,14 @@ MEASURED = "measured"
 
 STAMP_FMT = "%Y%m%dT%H%M%SZ"
 
-#: `<period>.<write stamp>` — a recomputable report.
+#: Suffix on the one directory a period's drafts are rewritten into.
+UNSETTLED_SUFFIX = ".unsettled"
+#: What `split_name` returns in the stamp position for that directory: it
+#: is provisional like a stamped report, but it names no single write.
+UNSETTLED = "unsettled"
+
+#: `<period>.<write stamp>` — a recomputable report, written by versions
+#: before the draft was rewritten in place. Still read, never written.
 PROVISIONAL_RE = re.compile(r"^(?P<name>.+)\.(?P<stamp>\d{8}T\d{6}Z)$")
 #: `<covered day>-<timeframe>` — the period a report describes.
 NAME_RE = re.compile(r"^(?P<day>\d{4}-\d{2}-\d{2})-(?P<timeframe>\w+)$")
@@ -68,21 +86,40 @@ LEGACY_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
 # ---- naming ------------------------------------------------------------------
 
-def report_name(store, timeframe):
+def report_name(store, timeframe, end=None):
     """The period a report covers: `<newest day>-<timeframe>`.
 
-    Keyed on the day because that is what promotion turns on, and because
+    Keyed on the day because that is what settling turns on, and because
     two reports of one period are one document recomputed. The timeframe
     is in the name because `1w` and `2w` end on the same day.
     """
-    days = derive.window(store, timeframe)
-    end = days[-1] if days else (derive.settled_day(store) or "unknown")
-    return f"{end}-{timeframe}"
+    days = derive.window(store, timeframe, end=end)
+    last = days[-1] if days else (end or derive.settled_day(store) or "unknown")
+    return f"{last}-{timeframe}"
+
+
+def period_day(name):
+    """The day a period name ends on, or None when it is not one."""
+    m = NAME_RE.match(name or "")
+    return m.group("day") if m else None
+
+
+def is_settled(name, now=None):
+    """Can any future fetch still change what this period reports?"""
+    day = period_day(name)
+    return bool(day) and day <= derive.final_day(now)
 
 
 def split_name(dir_name):
-    """(period, write stamp) for a report directory. Stamp is None when
-    the report has been promoted, and period is None for a legacy one."""
+    """(period, write stamp) for a report directory.
+
+    The stamp is None when the report is the settled answer, `UNSETTLED`
+    for the draft that is rewritten in place, and a write stamp for a
+    draft written by a version that kept one directory per write. The
+    period is None for a legacy report, which names no period at all.
+    """
+    if dir_name.endswith(UNSETTLED_SUFFIX):
+        return dir_name[:-len(UNSETTLED_SUFFIX)], UNSETTLED
     m = PROVISIONAL_RE.match(dir_name)
     if m:
         return m.group("name"), m.group("stamp")
@@ -157,6 +194,24 @@ def window_digest(store, timeframe, end=None):
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
+def prior_report(reports_dir, store, timeframe):
+    """The report the next write would supersede, or None.
+
+    The current period's own draft when there is one, and the newest
+    write otherwise. Not simply the newest write: settling recomputes a
+    period from a fortnight ago and writes it now, so the newest write is
+    routinely a document about a different window. Comparing this period's
+    numbers against that one answers no question — the store has of course
+    advanced past a period that is two weeks old.
+    """
+    prior = previous_reports(reports_dir)
+    if not prior:
+        return None
+    name = report_name(store, timeframe)
+    same = [p for p in prior if split_name(p.name)[0] == name]
+    return (same or prior)[-1]
+
+
 def guard(reports_dir, store, now=None, timeframe="2w"):
     """(ok, reason). False means running again would say nothing new.
 
@@ -178,10 +233,10 @@ def guard(reports_dir, store, now=None, timeframe="2w"):
     the last report recorded, and a difference is grounds to write again.
     """
     now = now or datetime.now(timezone.utc)
-    prior = previous_reports(reports_dir)
-    if not prior:
+    last = prior_report(reports_dir, store, timeframe)
+    if last is None:
         return True, "no previous report"
-    meta = load_meta(prior[-1])
+    meta = load_meta(last)
     latest = derive.settled_day(store)
     seen = meta.get("latest_day")
     if seen and "settle_hours" not in meta:
@@ -246,10 +301,11 @@ def _table(headers, rows):
 
 # ---- sections ----------------------------------------------------------------
 
-def section_provenance(store, cfg, timeframe, run_dir, now, first=None):
-    days = derive.window(store, timeframe)
+def section_provenance(store, cfg, timeframe, run_dir, now, first=None,
+                       end=None, settled=False):
+    days = derive.window(store, timeframe, end=end)
     coverage = store.get("coverage") or []
-    name = report_name(store, timeframe)
+    name = report_name(store, timeframe, end=end)
     lines = [
         "## Provenance",
         "",
@@ -259,12 +315,15 @@ def section_provenance(store, cfg, timeframe, run_dir, now, first=None):
     ]
     rows = [
         ["report", f"`{name}`"],
+        ["status", "settled — no day in this window can change again"
+                   if settled else
+                   "unsettled — rewritten on every collection until it settles"],
         ["generated", now.strftime("%Y-%m-%d %H:%M UTC")],
     ]
     if first:
         # Present only on a recomputation: the store changed under a period
-        # already reported, so the figures below are not the ones published
-        # at `first`. That copy is still on disk under its own write stamp.
+        # already reported, so the figures below are not the ones this
+        # period was first described with.
         rows.append(["first written", first])
     lines += _table(["field", "value"], rows + [
         ["owner", store.get("owner") or "(unset)"],
@@ -281,9 +340,9 @@ def section_provenance(store, cfg, timeframe, run_dir, now, first=None):
     return lines
 
 
-def section_headline(store, timeframe):
-    days = derive.window(store, timeframe)
-    deltas = derive.deltas(store, timeframe)
+def section_headline(store, timeframe, end=None):
+    days = derive.window(store, timeframe, end=end)
+    deltas = derive.deltas(store, timeframe, end=end)
     clones = sum(r["clones"]["cur"] for r in deltas.values())
     views = sum(r["views"]["cur"] for r in deltas.values())
     comparable = any(r["comparable"] for r in deltas.values())
@@ -305,14 +364,14 @@ def section_headline(store, timeframe):
     return lines
 
 
-def section_movers(store, timeframe, limit=10):
-    deltas = derive.deltas(store, timeframe)
+def section_movers(store, timeframe, limit=10, end=None):
+    deltas = derive.deltas(store, timeframe, end=end)
     rows = sorted(deltas.values(),
                   key=lambda r: -abs(r["clones"]["delta"] or r["clones"]["cur"]))
     out = ["## Biggest movers", ""]
     table = []
     for r in rows[:limit]:
-        m = derive.momentum(store, r["repo"], timeframe)["clones"]
+        m = derive.momentum(store, r["repo"], timeframe, end=end)["clones"]
         direction = ("rising" if m["slope"] > 0.05 else
                      "falling" if m["slope"] < -0.05 else "flat")
         delta = r["clones"]["delta"]
@@ -330,8 +389,8 @@ def section_movers(store, timeframe, limit=10):
     return out
 
 
-def section_attribution(store, timeframe, limit=15):
-    result = derive.attribution(store, timeframe)
+def section_attribution(store, timeframe, limit=15, end=None):
+    result = derive.attribution(store, timeframe, end=end)
     rows = result["rows"]
     out = ["## What moved, and what caused it", ""]
     if not rows:
@@ -365,8 +424,8 @@ def section_attribution(store, timeframe, limit=15):
     return out
 
 
-def section_events(store, timeframe):
-    grid = derive.anomalies(store, timeframe)
+def section_events(store, timeframe, end=None):
+    grid = derive.anomalies(store, timeframe, end=end)
     out = ["## Account events", ""]
     if not grid["campaigns"]:
         return out + ["No day where three or more repos moved together.", ""]
@@ -380,8 +439,8 @@ def section_events(store, timeframe):
     return out
 
 
-def section_audience(store, timeframe):
-    rows = derive.audience(store, timeframe)
+def section_audience(store, timeframe, end=None):
+    rows = derive.audience(store, timeframe, end=end)
     ranked = [r for r in rows.values() if r["label"] != "low-signal"]
     ranked.sort(key=lambda r: r["score"])
     out = ["## Audience — people or fetchers", ""]
@@ -407,8 +466,8 @@ def section_audience(store, timeframe):
     return out
 
 
-def section_intent(store, timeframe):
-    rows = derive.intent(store, timeframe)
+def section_intent(store, timeframe, end=None):
+    rows = derive.intent(store, timeframe, end=end)
     ranked = sorted((r for r in rows.values() if r["label"] != "low-signal"),
                     key=lambda r: -r["score"])
     out = ["## Clone intent", ""]
@@ -427,8 +486,8 @@ def section_intent(store, timeframe):
     return out
 
 
-def section_coupling(store, timeframe, limit=10):
-    result = derive.coupled(store, timeframe)
+def section_coupling(store, timeframe, limit=10, end=None):
+    result = derive.coupled(store, timeframe, end=end)
     out = ["## Coupled repos", ""]
     if result["reason"]:
         return out + [f"Not computed: {result['reason']}.", ""]
@@ -479,8 +538,8 @@ def section_content(funnel_rows, limit=12):
     return out
 
 
-def section_limits(store, timeframe, funnel_rows):
-    days = derive.window(store, timeframe)
+def section_limits(store, timeframe, funnel_rows, end=None):
+    days = derive.window(store, timeframe, end=end)
     total_days = len(derive.store_days(store))
     out = ["## What this report cannot tell you", "",
            "Stated explicitly, because an analysis that only lists findings "
@@ -493,7 +552,7 @@ def section_limits(store, timeframe, funnel_rows):
     if len(days) < derive.COUPLE_MIN_DAYS:
         limits.append(f"**Coupling.** Needs {derive.COUPLE_MIN_DAYS} days in the "
                       f"window; this one has {len(days)}.")
-    if not derive.previous_window(store, timeframe):
+    if not derive.previous_window(store, timeframe, end=end):
         limits.append("**Change.** No previous window of equal length, so no "
                       "delta is computable.")
     if not (store.get("events") or {}):
@@ -518,36 +577,68 @@ def section_limits(store, timeframe, funnel_rows):
 
 # ---- assembly ----------------------------------------------------------------
 
-def build_report(store, cfg, timeframe="2w", run_dir=None, now=None, first=None):
+def banner(name, settled, now=None):
+    """The one thing a reader must know before the first number.
+
+    Provisionality is in the directory name, and a directory name is not
+    what anyone reads: reports get opened, pasted and quoted out of the
+    tree they were written into. So the document states it too, and states
+    the date after which it stops being provisional rather than asking the
+    reader to do the arithmetic.
+    """
+    if settled:
+        return ["> **SETTLED.** Every day in this window has left GitHub's "
+                "14-day traffic reach, so no later fetch can change these "
+                "figures. This file is written once and not revisited.", ""]
+    day = period_day(name)
+    when = ((date.fromisoformat(day) + timedelta(days=derive.TRAFFIC_WINDOW_DAYS + 1))
+            .isoformat() if day else "the window's end + 15 days")
+    return [f"> **UNSETTLED — these figures will change.** GitHub is still "
+            f"revising days in this window: it keeps adding counts to a day "
+            f"for `CATNIP_SETTLE_HOURS` ({derive.settle_hours()}h) after the "
+            f"day closes, and it can correct one until it leaves the 14-day "
+            f"window. This file is rewritten in place on every collection "
+            f"until {when}, when the period is recomputed once and written as "
+            f"`{name}/`.", ""]
+
+
+def build_report(store, cfg, timeframe="2w", run_dir=None, now=None, first=None,
+                 end=None, settled=None):
     """The full markdown document as a string.
 
     `first` is the write stamp of the period's first report, passed only
-    when this is a recomputation of one already on disk.
+    when this is a recomputation of one already on disk. `end` pins the
+    window to a period that is not the store's current edge, which is what
+    settling a fortnight-old period needs. `settled` says which document
+    this is; it is derived from the period when not given.
     """
     now = now or datetime.now(timezone.utc)
+    name = report_name(store, timeframe, end=end)
+    settled = is_settled(name, now) if settled is None else settled
     funnel_rows = read_csv(run_dir / "analysis" / "traffic_funnel.csv") if run_dir else []
     owner = store.get("owner") or "this account"
     lines = [f"# catnip report — {owner}", "",
              f"_Deterministic analysis of the durable daily store. Every figure "
              f"is `{MEASURED}`: derived arithmetic, reproducible from the same "
              f"store and timeframe._", ""]
+    lines += banner(name, settled, now)
     for section in (
-        section_provenance(store, cfg, timeframe, run_dir, now, first),
-        section_headline(store, timeframe),
-        section_movers(store, timeframe),
-        section_attribution(store, timeframe),
-        section_events(store, timeframe),
-        section_audience(store, timeframe),
-        section_intent(store, timeframe),
-        section_coupling(store, timeframe),
+        section_provenance(store, cfg, timeframe, run_dir, now, first, end, settled),
+        section_headline(store, timeframe, end),
+        section_movers(store, timeframe, end=end),
+        section_attribution(store, timeframe, end=end),
+        section_events(store, timeframe, end),
+        section_audience(store, timeframe, end),
+        section_intent(store, timeframe, end),
+        section_coupling(store, timeframe, end=end),
         section_content(funnel_rows),
-        section_limits(store, timeframe, funnel_rows),
+        section_limits(store, timeframe, funnel_rows, end),
     ):
         lines += section
     return "\n".join(lines).rstrip() + "\n"
 
 
-# ---- promotion ---------------------------------------------------------------
+# ---- settling ----------------------------------------------------------------
 
 def first_written(reports_dir, name):
     """When this period was first reported, across every recomputation."""
@@ -557,24 +648,22 @@ def first_written(reports_dir, name):
         if period != name or not (child / "report.md").is_file():
             continue
         meta = load_meta(child)
+        if stamp == UNSETTLED:
+            stamp = None
         stamps.append(meta.get("first_written") or meta.get("written") or stamp or "")
     return min((s for s in stamps if s), default=None)
 
 
-def promote(reports_dir, now=None):
-    """Move every settled period to its unstamped name. Returns the moves.
+def pending(reports_dir, now=None):
+    """Every period whose draft is on disk and whose window is now final.
 
-    Runs on every invocation: a period becomes final about two weeks after
-    the cycle that produced it, so tying promotion to a report being
-    written would leave the settled copy stamped while the store is quiet.
-
-    The newest recomputation is promoted — it read the most corrected
-    store. Its superseded siblings stay put; they are the record of what
-    was believed on each date.
+    A period appears once, however many drafts it has: the current
+    `<period>.unsettled` and any per-write directories left by an older
+    version are all descriptions of the same window.
     """
     reports_dir = Path(reports_dir)
     if not reports_dir.is_dir():
-        return []
+        return {}
     cutoff = derive.final_day(now)
     groups = {}
     for child in sorted(reports_dir.iterdir()):
@@ -582,24 +671,125 @@ def promote(reports_dir, now=None):
         if not stamp or not period or not (child / "report.md").is_file():
             continue
         m = NAME_RE.match(period)
-        if m and m.group("day") <= cutoff:
-            groups.setdefault(period, []).append((stamp, child))
-
-    moved = []
-    for period, entries in sorted(groups.items()):
-        target = reports_dir / period
-        if target.exists():
+        if not m or m.group("day") > cutoff:
             continue
-        stamp, src = max(entries)
-        src.rename(target)
-        meta = load_meta(target)
-        meta.update({"promoted": True,
-                     "promoted_at": (now or datetime.now(timezone.utc)).strftime(STAMP_FMT),
-                     "status": "settled"})
-        (target / "meta.json").write_text(
-            json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        moved.append((src, target))
-    return moved
+        if (reports_dir / period).exists():
+            # Already settled on an earlier run. The drafts stay where they
+            # are; deleting them would delete the record of what a period
+            # was believed to say before it was final.
+            continue
+        groups.setdefault(period, []).append((stamp, child))
+    return groups
+
+
+def settled_periods(reports_dir):
+    """Every period on disk that can no longer change, oldest first.
+
+    The transition list from `settle` names only what moved in one call,
+    which is the right trigger and the wrong record: a consumer that
+    crashed, or that was installed after the fact, has no way to ask what
+    it missed. This is that question's answer, and it is derived from the
+    directory names rather than from a log, so it cannot drift from what
+    is actually there.
+    """
+    reports_dir = Path(reports_dir)
+    if not reports_dir.is_dir():
+        return []
+    out = []
+    for child in sorted(reports_dir.iterdir()):
+        period, stamp = split_name(child.name)
+        if stamp is not None or not period or not (child / "report.md").is_file():
+            continue
+        m = NAME_RE.match(period)
+        if not m:
+            continue
+        meta = load_meta(child)
+        out.append({"period": period, "day": m.group("day"),
+                    "timeframe": m.group("timeframe"),
+                    "settled_at": meta.get("settled_at")
+                    or meta.get("promoted_at") or meta.get("last_recomputed"),
+                    "dir": str(child)})
+    return sorted(out, key=lambda r: (r["day"], r["timeframe"]))
+
+
+def retire_draft(draft, target):
+    """Remove a draft the settled copy replaces, keeping anything else.
+
+    A report directory is not only this module's: the prowl chain
+    publishes `prowl.md` into the directory `locate` hands it, so a draft
+    can hold the account's only copy of an analysis nothing here wrote.
+    The two files that were recomputed are deleted and the rest is moved
+    across; anything that cannot move keeps the draft alive, because a
+    directory left behind is a question and a deleted document is not.
+    """
+    if not draft.is_dir():
+        return
+    for item in sorted(draft.iterdir()):
+        if item.name in ("report.md", "meta.json") and item.is_file():
+            item.unlink()
+            continue
+        dest = target / item.name
+        if not dest.exists():
+            item.rename(dest)
+    with contextlib.suppress(OSError):
+        draft.rmdir()
+
+
+def settle(reports_dir, store=None, cfg=None, now=None):
+    """Write the settled report for every period that just became final.
+
+    Returns the periods that transitioned in this call, oldest first. That
+    list is the trigger for anything downstream: the deterministic report
+    is the only place that knows a window stopped moving, and an inference
+    pass over a window GitHub is still revising is a pass over numbers
+    that will not be there next week.
+
+    Runs on every invocation, because a period becomes final about two
+    weeks after the cycle that wrote it and nothing needs to be collected
+    that day for it to happen.
+
+    The draft is not renamed. It was computed from a store GitHub has
+    since corrected — that is what provisional means — so the period is
+    recomputed from the store as it now stands, with the window pinned to
+    the days the period covers. Only when the store cannot answer (no
+    store, or a store that no longer reaches back that far) does the
+    newest draft get promoted as-is, because a stale report is still
+    better than none.
+    """
+    now = now or datetime.now(timezone.utc)
+    reports_dir = Path(reports_dir)
+    settled = []
+    for period, drafts in sorted(pending(reports_dir, now).items()):
+        m = NAME_RE.match(period)
+        day, timeframe = m.group("day"), m.group("timeframe")
+        target = reports_dir / period
+        recomputed = False
+        if (store is not None and timeframe in derive.WINDOW_DAYS
+                and derive.window(store, timeframe, end=day)):
+            text = build_report(store, cfg, timeframe, None, now,
+                                first=first_written(reports_dir, period),
+                                end=day, settled=True)
+            write_report(text, reports_dir, store, timeframe, None, now,
+                         end=day, settled=True)
+            recomputed = True
+        else:
+            stamp, src = max(drafts)
+            src.rename(target)
+            meta = load_meta(target)
+            meta.update({"promoted": True, "status": "settled",
+                         "settled_at": now.strftime(STAMP_FMT),
+                         "recomputed_on_settling": False})
+            (target / "meta.json").write_text(
+                json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        # The draft has been superseded by a document written from better
+        # data. Keeping it would leave two answers for one period with
+        # nothing but a suffix to say which is current.
+        if recomputed:
+            retire_draft(reports_dir / (period + UNSETTLED_SUFFIX), target)
+        settled.append({"period": period, "day": day, "timeframe": timeframe,
+                        "settled_at": now.strftime(STAMP_FMT),
+                        "recomputed": recomputed, "dir": str(target)})
+    return settled
 
 
 def locate(reports_dir):
@@ -628,13 +818,20 @@ def locate(reports_dir):
 
 # ---- writing -----------------------------------------------------------------
 
-def write_report(text, reports_dir, store, timeframe, run_dir, now=None):
-    """Write report.md + meta.json under `<period>.<write stamp>/`."""
+def write_report(text, reports_dir, store, timeframe, run_dir, now=None,
+                 end=None, settled=None):
+    """Write report.md + meta.json for a period, and return the directory.
+
+    An unsettled period lands in `<period>.unsettled/` and overwrites
+    whatever was there: it is one document being kept current, not a
+    series. A settled one lands in `<period>/` and is written once.
+    """
     now = now or datetime.now(timezone.utc)
     stamp = now.strftime(STAMP_FMT)
     reports_dir = Path(reports_dir)
-    name = report_name(store, timeframe)
-    out_dir = reports_dir / f"{name}.{stamp}"
+    name = report_name(store, timeframe, end=end)
+    settled = is_settled(name, now) if settled is None else settled
+    out_dir = reports_dir / (name if settled else name + UNSETTLED_SUFFIX)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "report.md").write_text(text, encoding="utf-8")
     meta = {
@@ -643,13 +840,13 @@ def write_report(text, reports_dir, store, timeframe, run_dir, now=None):
         # description was last redone because the store changed.
         "first_written": first_written(reports_dir, name) or stamp,
         "last_recomputed": stamp,
-        "status": "provisional",
-        "promoted": False,
+        "status": "settled" if settled else "unsettled",
+        "promoted": settled,
         # Under its original name: readers older than periods use this.
         "written": stamp,
         # The day the report actually covers, which `guard` compares against
         # on the next cycle. It must be the same day the windows end on.
-        "latest_day": derive.settled_day(store),
+        "latest_day": end or derive.settled_day(store),
         # Both days, named apart. The whole defect this file now guards
         # against was two different measurements sharing the name
         # `latest_day` across a version boundary.
@@ -660,9 +857,12 @@ def write_report(text, reports_dir, store, timeframe, run_dir, now=None):
         "provenance": MEASURED,
         # What this report asserted, so the next cycle can tell whether a
         # late arrival has since changed a day it already described.
-        "window_digest": window_digest(store, timeframe),
+        "window_digest": window_digest(store, timeframe, end=end),
         "settle_hours": derive.settle_hours(),
     }
+    if settled:
+        meta["settled_at"] = stamp
+        meta["recomputed_on_settling"] = end is not None
     (out_dir / "meta.json").write_text(
         json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out_dir
@@ -681,8 +881,13 @@ def main(argv=None):
                         "last report. For prototyping.")
     p.add_argument("--stdout", action="store_true",
                    help="Print the report instead of writing it.")
-    p.add_argument("--promote", action="store_true",
-                   help="Only run the promotion sweep; write nothing.")
+    p.add_argument("--settle", "--promote", dest="settle", action="store_true",
+                   help="Only run the settling sweep; write no new report.")
+    p.add_argument("--transitions", action="store_true",
+                   help="Run the settling sweep and print, as JSON, the "
+                        "periods that became settled in this call and every "
+                        "settled period on disk. An empty `settled` means "
+                        "nothing transitioned and no inference is owed.")
     p.add_argument("--locate", action="store_true",
                    help="Print the newest report's paths and meta as JSON.")
     p.add_argument("--digest", action="store_true",
@@ -704,19 +909,40 @@ def main(argv=None):
         sys.stdout.write("\n")
         return 0
 
-    # Whatever the guard decides: a period settles about two weeks after
-    # the cycle that wrote it.
-    for src, target in promote(reports_dir):
-        print(f"Promoted: {src.name} -> {target.name}")
-    if args.promote:
-        return 0
+    store = None
+    if cfg.history_file.is_file():
+        with cfg.history_file.open(encoding="utf-8") as fh:
+            store = json.load(fh)
 
-    if not cfg.history_file.is_file():
+    # Whatever the guard decides, and before the guard is consulted: a
+    # period settles about two weeks after the cycle that wrote it, and
+    # the recomputation reads the store this run just corrected.
+    #
+    # Not on the read-only paths. `--digest` is called once per published
+    # prowl cycle by the tannery's re-open sweep, and a query that rewrites
+    # reports as a side effect is a query nobody can run twice safely.
+    if not (args.digest or args.stdout):
+        transitions = settle(reports_dir, store, cfg)
+        for t in transitions:
+            print(f"Settled: {t['period']}"
+                  + ("" if t["recomputed"] else " (promoted as written; the "
+                                                "store no longer reaches it)"))
+        if args.transitions:
+            # Both, because they answer different questions. `settled` is
+            # the trigger — what became final in this call. `known` is the
+            # record, for a consumer that was not running when it did.
+            json.dump({"settled": transitions,
+                       "known": settled_periods(reports_dir)},
+                      sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+            return 0
+        if args.settle:
+            return 0
+
+    if store is None:
         print(f"catnip: no durable store at {cfg.history_file}. "
               f"Run `catnip run` first.", file=sys.stderr)
         return 1
-    with cfg.history_file.open(encoding="utf-8") as fh:
-        store = json.load(fh)
 
     if args.digest:
         days = derive.window(store, args.timeframe, end=args.end)

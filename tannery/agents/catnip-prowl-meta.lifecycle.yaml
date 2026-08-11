@@ -1,9 +1,0 @@
-agent: catnip-prowl-meta
-schedule: "22 8 */3 * *"
-timeout: 900s
-tool_timeout: 420s
-tool_rounds: 12
-
-output:
-  - type: file
-    path: .state/artifacts/{{.date}}-catnip-prowl-meta.txt

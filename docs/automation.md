@@ -2,19 +2,28 @@
 
 catnip is worth automating for one reason: GitHub's traffic API serves a
 rolling ~14-day window and nothing older. Anything you do not collect
-inside that window is gone permanently. Daily is the right cadence; the
-point of the schedule is not freshness, it is not losing days.
+inside that window is gone permanently. Daily is the floor; the point of
+the schedule is not freshness, it is not losing days.
+
+Every mechanism below defaults to **every six hours**. GitHub keeps adding
+counts to a day for `CATNIP_SETTLE_HOURS` (36) after it closes and can
+correct one until it leaves the 14-day window, so four reads a day place a
+late arrival to within six hours instead of within a day, recompute the
+unsettled report against corrected figures four times over, and turn one
+failed collection into six lost hours rather than a lost day. It does not
+make a day settle sooner — the wait is GitHub's pipeline, not a sampling
+rate.
 
 Pick one of these. They are alternatives, not layers — two schedulers
-means two fetches a day against one rate budget, racing over one data
+means two fetches against one rate budget, racing over one data
 directory.
 
 | Mechanism | Runs | Also gives you |
 |---|---|---|
-| [systemd](#systemd-linux) | `catnip run`, daily | Catch-up after sleep |
-| [cron](#cron-anything-posix) | `catnip run`, daily | Works anywhere |
-| [launchd](#launchd-macos) | `catnip run`, daily | Catch-up after sleep |
-| [leather tannery](#leather-tannery) | `catnip run`, daily | `report.md` when the data lands, `prowl.md` every third day |
+| [systemd](#systemd-linux) | `catnip run`, every 6h | Catch-up after sleep, jitter |
+| [cron](#cron-anything-posix) | `catnip run`, every 6h | Works anywhere |
+| [launchd](#launchd-macos) | `catnip run`, every 6h | Catch-up after sleep |
+| [leather tannery](#leather-tannery) | `catnip run`, every 6h | `report.md` when the data lands, `prowl.md` when a report settles |
 
 The first three are the same job on different schedulers. The tannery is
 a different proposition: it needs `leather` and an OpenAI-compatible
@@ -69,8 +78,8 @@ work.
 
 ```ini
 # catnip.timer
-OnCalendar=daily
-RandomizedDelaySec=1h
+OnCalendar=*-*-* 00/6:00:00
+RandomizedDelaySec=40m
 Persistent=true
 ```
 
@@ -78,7 +87,17 @@ Persistent=true
 off at the scheduled time, systemd runs the job on wake. Cron has no
 equivalent, and a laptop that misses ten days loses ten days.
 
-Change the cadence in your config, then re-install:
+systemd's jitter is **additive**: `OnCalendar` is the earliest possible
+start and `RandomizedDelaySec` is the width of the window after it. The
+default fires uniformly between 00:00 and 00:40 and again every six hours
+— the ±20 minutes of variability, measured from the middle of that
+spread. Verify a cadence before installing it:
+
+```bash
+systemd-analyze calendar '*-*-* 00/6:00:00'
+```
+
+Change it in your config, then re-install:
 
 ```ini
 CATNIP_TIMER_ONCALENDAR=*-*-* 03,15:00:00   # twice a day
@@ -97,15 +116,20 @@ crontab -e              # paste it
 ```
 
 ```cron
-17 3 * * *  CATNIP_CONFIG=/home/you/.config/catnip/catnip.conf \
-            /home/you/catnip/bin/catnip run --quiet >> \
-            /home/you/.local/share/catnip/logs/cron.log 2>&1
+0 */6 * * *  sleep $(awk 'BEGIN{srand();print int(rand()*2400)}') && \
+             CATNIP_CONFIG=/home/you/.config/catnip/catnip.conf \
+             /home/you/catnip/bin/catnip run --quiet >> \
+             /home/you/.local/share/catnip/logs/cron.log 2>&1
 ```
 
-Two things to know. Cron cannot catch up a missed run — if the machine is
-off at 03:17 you lose that day's collection, so on a laptop prefer
-systemd, or run twice a day. And cron's `PATH` is minimal: if `gh` lives
-somewhere unusual, set `PATH=` at the top of your crontab.
+Three things to know. Cron has no `RandomizedDelaySec`, so the line sleeps
+a random part of 40 minutes first; `awk` rather than `$RANDOM`, because
+cron runs the command under `/bin/sh` where that bashism expands to
+nothing and the sleep becomes a syntax error every six hours. Cron cannot
+catch up a missed run — if the machine is off at 06:00 you lose that read,
+though at this cadence the next one four to six hours later covers for it.
+And cron's `PATH` is minimal: if `gh` lives somewhere unusual, set `PATH=`
+at the top of your crontab.
 
 ## launchd (macOS)
 
@@ -132,8 +156,15 @@ There is no `catnip timer` support for launchd yet. Write
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
+  <!-- An array of intervals is launchd's every-six-hours. Minute 17
+       rather than 0, to stay off everyone else's top of the hour. -->
   <key>StartCalendarInterval</key>
-  <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>17</integer></dict>
+  <array>
+    <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>17</integer></dict>
+    <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>17</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>17</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>17</integer></dict>
+  </array>
   <!-- launchd's equivalent of Persistent=true: run on wake if the
        scheduled time was missed. -->
   <key>RunAtLoad</key>        <false/>
@@ -154,12 +185,14 @@ not inherit your shell's.
 ## leather tannery
 
 `tannery/` is a [leather](https://github.com/TGPSKI/leather) workspace
-that *is* the scheduler. Its cron runs collect daily at 05:07 and the
-meta-analyst every third day at 08:22; everything downstream — the
-deterministic report, the analyst passes, the editor — fires when its
-input arrives rather than on a clock of its own. There is no
-`catnip.timer` in this arrangement. `tannery/README.md` documents the
-chain; this section is about running it.
+that *is* the scheduler. One cron entry runs collect every six hours at
+:07; everything downstream — the deterministic report, the meta-analyst,
+the analyst passes, the editor — fires when its input arrives rather than
+on a clock of its own. The meta-analyst's input is a report settling,
+which happens about once a day, so three collections in four queue no
+inference at all. There is no `catnip.timer` in this arrangement.
+`tannery/README.md` documents the chain; this section is about running
+it.
 
 You need `leather` on `PATH`, `catnip` on `PATH` (`make install`), and
 an OpenAI-compatible endpoint. No frontier model: every number an agent
@@ -248,8 +281,7 @@ leather status --config config.yaml
 ```
 
 ```
-catnip-collect     success   last=2026-08-08 05:07:01  next=2026-08-09 05:07:00  runs=1
-catnip-prowl-meta  pending   last=never                next=2026-08-10 08:22:00  runs=0
+catnip-collect     success   last=2026-08-08 06:07:01  next=2026-08-08 12:07:00  runs=4
 ```
 
 **`leather status` reports the schedule and the last outcome, not
@@ -271,7 +303,9 @@ The check that matters under any mechanism is run freshness.
 | An edit to an agent has no effect | Agents load at startup. Restart the service |
 | Collect succeeds, the TUI shows nothing new | `CATNIP_CONFIG` missing from the unit — two data directories |
 | Collect runs, no report follows | The chain's joints are HTTP intakes on `127.0.0.1:7751`; `api: true` and `api_addr` in `config.yaml` must match the URL in `agents/catnip-collect.lifecycle.yaml` |
-| The report records `skipped` | Not a fault. The store did not advance, so the report refused to describe yesterday as today |
+| The report records `skipped` | Not a fault. The store did not advance and no day it covered was revised, so the report refused to describe yesterday as today |
+| The report records `queued 0 cycle(s)` | Not a fault. No period settled on this run; a period settles about once a day and collection runs four times |
+| No `prowl.md` for days | Check `.state/catnip-onsettle.json` against `catnip report --transitions`. Nothing settled means nothing to analyse; a settled period the state file does not list means the queue or the intake is the fault |
 
 ## GitHub Actions
 
@@ -290,9 +324,10 @@ catnip doctor            # includes run freshness and the timer's state
 catnip runs              # every run, and whether it was analyzed
 ```
 
-`doctor` warns when the newest run is over 48 hours old. That is the
-signal that matters — the timer being "enabled" says nothing about
-whether the last five runs failed.
+`doctor` warns when the newest run is over 48 hours old — eight missed
+runs at the default cadence, and still the threshold that matters, because
+it is the one that means days are being lost. The timer being "enabled"
+says nothing about whether the last five runs failed.
 
 Common causes of a timer that stops producing data:
 
@@ -309,8 +344,10 @@ agent through diagnosing it properly.
 
 ## Disk and retention
 
-A run is roughly 50–200 KB per repository, most of it raw JSON. Prune
-periodically:
+A run is roughly 50–200 KB per repository, most of it raw JSON, and the
+six-hourly default writes four run directories a day. Prune
+periodically — `CATNIP_RETAIN_DAYS` (30) bounds this, and lowering it is
+the knob if the four-fold growth matters:
 
 ```bash
 catnip prune             # dry run, always

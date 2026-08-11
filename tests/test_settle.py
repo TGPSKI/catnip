@@ -236,7 +236,7 @@ class VerdictTests(unittest.TestCase):
                                ("20260803T190000Z", "2026-08-01", 30)])
         self.assertEqual(result["proven_short"], [])
         self.assertEqual(result["unresolved"], ["2026-08-01"])
-        self.assertIn("Collecting twice a day", settle.summary_line(result))
+        self.assertIn("shorter collection interval", settle.summary_line(result))
 
     def test_a_day_final_before_the_wait_confirms_it(self):
         result = self.verdict([("20260802T190000Z", "2026-08-01", 30),

@@ -324,27 +324,45 @@ fetch saw, and `history --rebuild` reconstructs from surviving runs alone.
 
 ### Which copy of a report is the answer
 
-A report is named for the period it covers, and each recomputation is
-written beside the last:
+A report is named for the period it covers. There are two copies of a
+period at most: the draft, rewritten in place on every collection, and the
+settled answer, written once.
 
 ```
-reports/2026-08-05-2w.20260807T031722Z/   provisional
-reports/2026-08-05-2w.20260809T031519Z/   provisional, recomputed
-reports/2026-08-05-2w/                    settled
+reports/2026-08-05-2w.unsettled/   GitHub can still revise a day in it
+reports/2026-08-05-2w/             it cannot
 ```
 
-Promotion is **not** keyed on the settling wait. `settled_day` is already
+Settling is **not** keyed on the settling wait. `settled_day` is already
 `settle_hours` behind the newest fetch, so every day a report covers is
 older than the wait the moment it is written, and a rule on the wait alone
-would promote everything immediately. It is keyed on GitHub's 14-day
+would settle everything immediately. It is keyed on GitHub's 14-day
 window: past that no fetch can return the day, so the store's value is
 final by construction rather than by measurement. That takes about two
-weeks, so the sweep runs on every `catnip report` invocation.
+weeks, so the sweep runs on every `catnip report` invocation whether or
+not anything was collected.
+
+The settled copy is **recomputed, not renamed**. The draft's figures are
+the whole reason the period was provisional — GitHub was still correcting
+them — so promoting it would publish the numbers the wait existed to
+outlast. The period is rebuilt from the store as it now stands, with the
+window pinned to the days that period covers, and the draft is retired.
+Anything else in the draft's directory moves across rather than being
+deleted: the prowl chain publishes `prowl.md` there and this is not its
+owner. Only when the store cannot answer — no store, or one that no longer
+reaches back that far — is the draft promoted as written, and `meta.json`
+records that with `recomputed_on_settling: false`.
+
+Each document says which one it is, in a banner above the first number and
+a `status` row in its provenance table. A directory name is not what gets
+read: reports are opened, pasted and quoted away from the tree they were
+written in.
 
 `meta.json` records `first_written` and `last_recomputed` separately, and a
 recomputed report carries a `first written` row in its provenance table.
-`catnip report --locate` resolves the paths; nothing outside `report.py`
-should reproduce the naming rule.
+`catnip report --locate` resolves the paths and `catnip report
+--transitions` reports which periods became settled in this call; nothing
+outside `report.py` should reproduce the naming rule.
 
 ### And the inference beside it
 
@@ -354,12 +372,19 @@ The tannery records each published cycle's window digest and re-runs the
 cycle when it differs — `catnip report --digest --end <day>` recomputes it
 over the same days, so it fires on a revision rather than on a new day
 arriving. A cycle closes permanently once its window leaves the 14-day
-window, the same horizon report promotion uses.
+window, the same horizon report settling uses — and that transition is what
+queues a cycle in the first place. The tannery runs the meta-analyst when a
+period settles, not on a weekday: inference over a window GitHub is still
+revising rests on figures that will have moved by the time anyone reads it.
 
 Collecting more often does not shorten any of this. A day closes at 00:00
 UTC, so a fetch on the following day reads it at most 24h old however many
-times it runs — the wait is GitHub's pipeline, not a sampling rate. A second
-daily run buys redundancy against a failed collection, not a fresher window.
+times it runs — the wait is GitHub's pipeline, not a sampling rate. What the
+six-hourly default buys is elsewhere: a revision is placed to within six
+hours instead of within a day, which is what `catnip settle` measures the
+wait from; the unsettled report is recomputed against corrected figures four
+times a day instead of once; and a failed collection costs six hours rather
+than a day.
 
 **Where the rule is applied.** The arithmetic lives once, in
 `derive.settle_hours` and `derive.settled_edge`. It is applied at each

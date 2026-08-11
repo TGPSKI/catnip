@@ -147,12 +147,26 @@ def logs(lines=50, follow=False):
     return subprocess.run(cmd, check=False).returncode
 
 
+#: Seconds of jitter in front of a cron run. systemd has RandomizedDelaySec;
+#: cron has nothing, so the line sleeps a random part of it first. 2400 is
+#: the same 40-minute spread `CATNIP_TIMER_RANDOM_DELAY` defaults to.
+CRON_JITTER_SECONDS = 2400
+
+#: awk, not $RANDOM: crontab runs the command under /bin/sh, where $RANDOM
+#: is a bashism that expands to the empty string and turns the sleep into a
+#: syntax error every six hours.
+CRON_JITTER = (f"sleep $(awk 'BEGIN{{srand();print int(rand()*"
+               f"{CRON_JITTER_SECONDS})}}')")
+
+
 def cron_line(cfg: Config, config_file=None) -> str:
     src = config_file or (str(cfg.source) if cfg.source else "")
     env = f"CATNIP_CONFIG={src} " if src else ""
-    return (f"# catnip — daily collection (cron has no Persistent= equivalent; a\n"
-            f"# machine asleep at this time simply misses the day)\n"
-            f"17 3 * * *  {env}{catnip_bin()} run --quiet >> "
+    return (f"# catnip — collection every 6 hours (cron has no Persistent=\n"
+            f"# equivalent; a machine asleep at one of these times misses that\n"
+            f"# read, and the next one four to six hours later covers for it).\n"
+            f"# The sleep is the jitter systemd gets from RandomizedDelaySec.\n"
+            f"0 */6 * * *  {CRON_JITTER} && {env}{catnip_bin()} run --quiet >> "
             f"{cfg.log_dir / 'cron.log'} 2>&1")
 
 

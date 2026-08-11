@@ -39,9 +39,9 @@ catnip report --stdout | head -30      # provenance block: coverage, days, run
 ```
 
 The guard refuses to write a second report until the store's newest day
-advances, because catnip collects daily and two reports over identical
-data are one finding printed twice. Respect that unless the operator is
-prototyping.
+advances or a day it already described is revised: catnip collects every
+six hours, and two reports over identical data are one finding printed
+twice. Respect that unless the operator is prototyping.
 
 - Store has fewer than ~7 days? Say so and keep the report short. Most
   derived views are unavailable and pretending otherwise is the defect.
@@ -51,15 +51,17 @@ prototyping.
 ## Phase 1 — the deterministic floor
 
 ```bash
-catnip report                          # writes <data>/reports/<period>.<stamp>/report.md
+catnip report                          # writes <data>/reports/<period>.unsettled/report.md
 catnip report --stdout                 # or read it without writing
 catnip report --locate                 # where the newest one is, and whether it is final
 ```
 
 `--locate` reports `promoted`. False means a later collection can still
-change the figures and the report will be recomputed under a new write
-stamp; true means its window has left GitHub's 14-day reach and the numbers
-are final.
+change the figures and the draft at `<period>.unsettled/` will be
+rewritten in place; true means its window has left GitHub's 14-day reach,
+the period was recomputed from the corrected store and written once at
+`<period>/`, and the numbers are final. Every report says which it is in a
+banner above the first number.
 
 Read it fully before forming any opinion. It gives you: headline totals
 and change, biggest movers with trend, attribution tiers, account events,

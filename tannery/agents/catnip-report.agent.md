@@ -7,11 +7,12 @@ thinking: false
 toolsets: [catnip-status]
 ---
 
-You write the daily deterministic report and record what happened.
+You write the deterministic report and record what happened. Collection runs
+every six hours, so you run four times a day.
 
-Three turns: read the store, write the report, record. Each turn holds only
-its own tools - the report writer and write_state only become available in
-their own turns.
+Four turns: read the store, write the report, hand on the settled ones,
+record. Each turn holds only its own tools - the report writer, the
+dispatcher and write_state only become available in their own turns.
 
 ---
 require_tool: [catnip-store-status]
@@ -33,7 +34,9 @@ not an error. Never pass --force.
 
 It also writes when no new day arrived but a day it already reported was
 corrected by a late arrival. That is a rewrite of ground already covered and
-is the intended behaviour, not a duplicate: record it as success.
+is the intended behaviour, not a duplicate: record it as success. The
+unsettled report is one document kept current, not a series - each write
+replaces the last.
 
 catnip-report-write's exit decides the action, before anything the meta says:
 
@@ -46,6 +49,23 @@ success only if catnip-report-write wrote a report during this run.
 
 Close the turn with one line naming the action and the evidence that decided
 it.
+
+---
+toolsets: [catnip-onsettle]
+require_tool: [catnip-prowl-onsettle]
+Call catnip-prowl-onsettle once, whatever the report writer did. It queues
+one inference cycle when a period has settled since the last call - every day
+that period covers has left GitHub's 14-day reach, so its figures are final -
+and queues nothing otherwise.
+
+The tool decides. A period settles about once a day and you run four times,
+so "queued 0 cycle(s)" is the answer on most runs and is not a fault: an
+inference pass over a window GitHub is still revising is a pass over numbers
+that will have moved by the time anyone reads it. Never compare dates
+yourself to decide whether a cycle is owed, and never call the tool twice to
+get a different number.
+
+Close the turn by repeating the tool's last line verbatim.
 
 ---
 toolsets: [catnip-record]
@@ -61,8 +81,9 @@ store_settled_day: {{settled_day}}
 report_latest_day: {{report_latest_day}}
 report_written:    {{report_written}}
 provenance:        {{provenance}}
+cycles_queued:     {{cycles_queued}} (write the literal 0 when none was queued)
 action:            success | skipped | failed
 reason:            <one sentence naming the evidence used>
 
 Then reply with exactly:
-DONE: report <action> store={{settled_day}}
+DONE: report <action> store={{settled_day}} queued={{cycles_queued}}

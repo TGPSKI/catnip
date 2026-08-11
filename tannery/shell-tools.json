@@ -222,6 +222,16 @@
       "output_cap_bytes": 4000
     },
     {
+      "name": "catnip_prowl_onsettle",
+      "description": "Queue one prowl meta-analysis cycle if a deterministic report has settled since the last time this ran, and nothing otherwise. A period settles when every day it covers has left GitHub's 14-day reach, so its figures are final; that transition is what a cycle of inference is owed to, not a weekday. Prints one line per newly settled period and ends with 'queued N cycle(s)' - N is 0 on most runs and that is the healthy answer. Takes no arguments, records what it dispatched, and is safe to call every cycle.",
+      "command": "python3",
+      "args": [
+        "scripts/prowl-onsettle.py"
+      ],
+      "timeout_seconds": 120,
+      "output_cap_bytes": 4000
+    },
+    {
       "name": "write_state",
       "description": "Write content to a .state/ file path",
       "command": "bash",

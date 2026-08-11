@@ -1,5 +1,13 @@
 agent: catnip-collect
-schedule: "7 5 * * *"
+# Every six hours. GitHub keeps revising a day for
+# CATNIP_SETTLE_HOURS after it closes and a daily read can only
+# place a revision to within 24h; four reads bound it to six, and
+# each one recomputes the unsettled report from corrected data.
+# :07 rather than the hour, so this is not competing with every
+# other cron on the machine. leather's scheduler has no jitter of
+# its own - the systemd timer's RandomizedDelaySec has no
+# equivalent here.
+schedule: "7 */6 * * *"
 timeout: 6600s
 tool_timeout: 6000s
 tool_rounds: 12

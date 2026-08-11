@@ -1,29 +1,30 @@
 # catnip tannery
 
 A [leather](https://github.com/TGPSKI/leather) tannery that runs catnip
-unattended: collect the account's GitHub traffic daily, write the
-deterministic report when the data lands, and every third day send an
-analyst hunting for what the report cannot say.
+unattended: collect the account's GitHub traffic every six hours, rewrite
+the deterministic report when the data lands, and send an analyst hunting
+for what the report cannot say whenever a report settles.
 
 | agent | when | does |
 |---|---|---|
-| `catnip-collect` | daily 05:07 | `catnip run`, then checks the data landed |
-| `catnip-report` | when collect delivers | writes the deterministic report |
-| `catnip-prowl-meta` | every 3rd day 08:22 | sizes the cycle, seeds N analyst briefs |
+| `catnip-collect` | every 6h at :07 | `catnip run`, then checks the data landed |
+| `catnip-report` | when collect delivers | writes the deterministic report, queues a cycle if one settled |
+| `catnip-prowl-meta` | when a report settles | sizes the cycle, seeds N analyst briefs |
 | `catnip-prowl` | one run per brief | investigates one angle |
 | `catnip-prowl-write` | one run per package | records into the cycle's assembly |
 | `catnip-prowl-editor` | one run per package | edits the assembly into one document |
 
-Only the fetch and the meta-analyst are on cron. Everything downstream runs
-when its input arrives: collect's output feeds the `report` curing, each
-seed feeds an analyst run, each analyst package feeds the writer. N is the
-meta's judgment of the evidence — a quiet window seeds one routine pass, a
-rich one seeds an angle per phenomenon — and collation is free: the writer's
-per-cycle files accumulate every package, and publishing dedupes into a
-staged assembly. The assembly goes to the editor before anything reaches
-`prowl.md`: the editor merges, orders and cuts, and its guarded publish —
-the only writer of the published file — refuses a document whose tier
-counts changed and skips one the cycle has advanced past.
+Only the fetch is on cron. Everything downstream runs when its input
+arrives: collect's output feeds the `report` curing, a settled report feeds
+the `prowl-meta` curing, each seed feeds an analyst run, each analyst
+package feeds the writer. N is the meta's judgment of the evidence — a quiet
+window seeds one routine pass, a rich one seeds an angle per phenomenon —
+and collation is free: the writer's per-cycle files accumulate every
+package, and publishing dedupes into a staged assembly. The assembly goes to
+the editor before anything reaches `prowl.md`: the editor merges, orders and
+cuts, and its guarded publish — the only writer of the published file —
+refuses a document whose tier counts changed and skips one the cycle has
+advanced past.
 
 Output lands where catnip already puts reports: `report.md` from the report
 agent, `prowl.md` beside it from the prowl chain. They are separate files
@@ -46,9 +47,19 @@ because one reproduces byte-for-byte from the store and one is inference.
   as a hide and enqueues it; the consuming curing does the rest. The queue
   name is the whole routing fact — the producer names it in the intake URL,
   the curing names the same queue as its consumer end. Collect feeds
-  `report-in`; prowl feeds `prowl-write-in`. The writer's entire input is
-  the analysis, so it cannot re-derive anything — the evidence was never in
-  its context.
+  `report-in`; the report feeds `prowl-meta-in`; prowl feeds
+  `prowl-write-in`. The writer's entire input is the analysis, so it cannot
+  re-derive anything — the evidence was never in its context.
+- **Inference is triggered by the data, not by a weekday.** The meta-analyst
+  used to run every third day, which asks the calendar a question only the
+  store can answer: most of what it read was still being revised. Now
+  `catnip-prowl-onsettle` queues exactly one cycle when a report period
+  settles — every day it covers has left GitHub's 14-day reach, so nothing
+  can change it again — and queues nothing otherwise. A period settles about
+  once a day and collection runs four times, so three runs in four end
+  `queued 0 cycle(s)`, which is the healthy answer rather than a skipped
+  step. The tool records what it dispatched, so it is safe to call every
+  cycle and cannot dispatch the same period twice.
 - **Recording is one deterministic call.** The number of findings varies per
   cycle, so a writer making one tool call per block silently drops one
   whenever its count is off. `catnip-prowl-record` takes the whole analysis,
@@ -98,7 +109,7 @@ make run-prowl-write  # ingest the newest analysis and drain it once
 
 `make smoke-tools` execs each read-only tool's argv straight from
 `shell-tools.json`, so an argv or quoting regression surfaces here instead of
-at 05:07 with nobody watching. Writers are deliberately skipped: a smoke test
+at 00:07 with nobody watching. Writers are deliberately skipped: a smoke test
 that fetches the whole account is not a smoke test.
 
 ## Timeouts stack, innermost first

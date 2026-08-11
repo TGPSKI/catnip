@@ -1,16 +1,16 @@
-.PHONY: all validate serve smoke-tools run-collect run-report run-prowl run-prowl-write run-reopen clean
+.PHONY: all validate serve smoke-tools run-collect run-report run-prowl run-prowl-write run-reopen run-onsettle clean
 
 all: validate
 
 validate: ## leather-validate every agent, lifecycle and toolset
 	leather validate --config config.yaml
 
-serve: ## run the scheduler (cron: collect 05:07, meta every 3d 08:22; the rest run when their queues deliver)
+serve: ## run the scheduler (cron: collect every 6h at :07; the rest run when their queues deliver)
 	leather serve --pretty --stats --config config.yaml --tannery tannery.yaml
 
 # Exec every read-only tool's exact argv straight from shell-tools.json. This
 # catches argv and quoting regressions before the scheduler ever runs them  - 
-# a tool that is wrong here fails at 05:07 with nobody watching. The writers
+# a tool that is wrong here fails at 00:07 with nobody watching. The writers
 # (catnip-run, catnip-report-write, the prowl recorder) are deliberately not
 # exercised: they have side effects, and a smoke test that fetches the whole
 # account is not a smoke test.
@@ -26,6 +26,11 @@ run-report: ## run the report agent once, now
 run-reopen: ## report which published cycles the store has since revised (queues nothing)
 	@python3 scripts/prowl-reopen.py --dry-run
 
+run-onsettle: ## report whether a settled period owes an inference cycle (queues nothing)
+	@python3 scripts/prowl-onsettle.py --dry-run
+
+# The served chain runs this from prowl-meta-in when a report settles; this
+# target is the by-hand version of the same leg.
 run-meta: ## size the cycle and seed analyst briefs, now (needs serve up for intake)
 	leather run --config config.yaml agents/catnip-prowl-meta.agent.md
 

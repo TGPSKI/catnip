@@ -52,9 +52,16 @@ CATNIP_SETTLE_HOURS=36
 # keeps runs whose days may still be revised.
 CATNIP_SETTLE_LOG_DAYS=90
 
-# Timer cadence (systemd OnCalendar syntax) and jitter. Daily is the
-# floor that keeps the 14-day traffic window from developing holes.
-# Collecting more often does not make a day settle sooner: the wait above is
-# GitHub's, not a sampling artifact.
-CATNIP_TIMER_ONCALENDAR=daily
-CATNIP_TIMER_RANDOM_DELAY=1h
+# Timer cadence (systemd OnCalendar syntax) and jitter. Daily is the floor
+# that keeps the 14-day traffic window from developing holes; every six
+# hours is the default because GitHub keeps revising a day for the wait
+# above, and a daily read can only place a revision to within 24 hours.
+# Collecting more often does not make a day settle sooner — the wait is
+# GitHub's, not a sampling artifact — but it does bound when the count
+# stopped moving, and it recomputes the unsettled report four times a day
+# instead of once.
+#
+# The jitter is additive: systemd starts somewhere in the 40 minutes after
+# the OnCalendar time, which is the +/-20m spread measured from its middle.
+CATNIP_TIMER_ONCALENDAR=*-*-* 00/6:00:00
+CATNIP_TIMER_RANDOM_DELAY=40m

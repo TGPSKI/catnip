@@ -5,7 +5,10 @@ Documentation=https://github.com/TGPSKI/catnip
 [Timer]
 OnCalendar=@CATNIP_ONCALENDAR@
 # Spread load away from the top of the hour — everyone's cron fires at
-# 00:00, and GitHub's rate limiter notices.
+# 00:00, and GitHub's rate limiter notices. systemd's jitter is additive
+# only: the OnCalendar time is the earliest possible start and the delay
+# is the width of the window after it, so a 40m delay on a 6-hourly
+# schedule is the +/-20m variability measured from the middle of it.
 RandomizedDelaySec=@CATNIP_RANDOM_DELAY@
 # The reason this is not a plain cron line. GitHub serves ~14 trailing
 # days of traffic data and nothing older, so a machine that was asleep at

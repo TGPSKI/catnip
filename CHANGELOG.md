@@ -36,25 +36,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`catnip report --digest`** prints the window digest for the current
   store. `--end` pins the window to a fixed day, which is what makes a
   digest recorded earlier comparable at all.
+- **`catnip report --transitions`** prints, as JSON, the periods that became
+  settled in this call and every settled period on disk. The first is the
+  trigger; the second is the record, for a consumer that was not running
+  when the transition happened.
+- **The tannery queues inference when a report settles, not on a weekday.**
+  `scripts/prowl-onsettle.py` enqueues one meta-analysis cycle on the new
+  `prowl-meta-in` queue when a period settles, and nothing otherwise; the
+  report agent calls it in a turn of its own. `catnip-prowl-meta` loses its
+  `22 8 */3 * *` cron and becomes a curing. A period settles about once a
+  day and collection now runs four times, so three runs in four report
+  `queued 0 cycle(s)` — the healthy answer, not a skipped step. Inference
+  over a window GitHub is still revising rests on figures that will have
+  moved by the time anyone reads it.
 
 ### Changed
 
-- **Reports are named for the period they cover, and promoted when it
-  settles.** `reports/<UTC stamp>/` becomes
-  `reports/2026-08-05-2w.<write stamp>/` while a day in the window can
-  still be revised, and the newest recomputation moves to
-  `reports/2026-08-05-2w/` once none can. Until now only the newest report
-  was ever rewritten and every older one kept its original figures: a day
-  read at a third of its final count 12h after closing was understated
-  threefold by the report written in between.
+- **Collection runs every six hours instead of once a day**, on all three
+  schedulers. `CATNIP_TIMER_ONCALENDAR` defaults to `*-*-* 00/6:00:00` and
+  `CATNIP_TIMER_RANDOM_DELAY` to `40m`; `catnip timer cron` prints
+  `0 */6 * * *` with an `awk` sleep in front of it, because cron has no
+  `RandomizedDelaySec` and `$RANDOM` is a bashism that `/bin/sh` expands to
+  nothing; the tannery's collect lifecycle runs `7 */6 * * *`. systemd's
+  jitter is additive, so the 40-minute window is the ±20m variability
+  measured from its middle. leather's scheduler has no jitter, so the
+  tannery keeps a fixed `:07`.
 
-  Promotion is keyed on GitHub's 14-day window, not the settling wait —
+  This does not make a day settle sooner — the wait is GitHub's pipeline,
+  not a sampling rate. It places a revision to within six hours instead of
+  within a day, which is the interval `catnip settle` measures the wait
+  from; it recomputes the unsettled report against corrected figures four
+  times a day; and it turns a failed collection into six lost hours rather
+  than a lost day. It also writes four run directories a day —
+  `CATNIP_RETAIN_DAYS` is the bound.
+- **Reports are named for the period they cover, and recomputed when it
+  settles.** `reports/<UTC stamp>/` becomes
+  `reports/2026-08-05-2w.unsettled/` while a day in the window can still be
+  revised, and `reports/2026-08-05-2w/` once none can. Until now only the
+  newest report was ever rewritten and every older one kept its original
+  figures: a day read at a third of its final count 12h after closing was
+  understated threefold by the report written in between.
+
+  The draft is one directory rewritten in place, not one per write: four
+  collections a day would otherwise bury the current answer under
+  supersedings within a week. Each document states which it is in a banner
+  above the first number and a `status` row in its provenance table — a
+  directory name is not what gets pasted into a chat.
+
+  The settled copy is **recomputed, not renamed**. The draft's figures are
+  the whole reason the period was provisional, so the period is rebuilt
+  from the corrected store with the window pinned to the days it covers.
+  Anything else in the draft's directory — `prowl.md`, which the prowl
+  chain publishes there — moves across rather than being deleted. A store
+  that no longer reaches the period promotes the draft as written and
+  records `recomputed_on_settling: false`.
+
+  Settling is keyed on GitHub's 14-day window, not the settling wait —
   `settled_day` is already `settle_hours` behind the newest fetch, so a
-  rule on the wait would promote every report the moment it was written.
+  rule on the wait would settle every report the moment it was written.
   `meta.json` gains `report_name`, `first_written`, `last_recomputed`,
-  `status` and `promoted`. `catnip report --locate` resolves the paths and
-  `--promote` runs only the sweep. Reports written before this stay where
-  they are.
+  `status`, `promoted` and `settled_at`. `catnip report --locate` resolves
+  the paths and `--settle` (still accepted as `--promote`) runs only the
+  sweep. Reports written before this stay where they are, and settle from
+  wherever they sit.
+- **The report guard compares against this period, not the newest write.**
+  Settling writes a fortnight-old period now, so the newest report on disk
+  is routinely about a different window; comparing the current store
+  against it passes trivially and rewrites the draft over identical data.
 
 ### Fixed
 

@@ -1,0 +1,7 @@
+name: prowl-meta
+description: Size a prowl cycle when a deterministic report settles.
+agent: catnip-prowl-meta
+queue: prowl-meta-in
+page_size_bytes: 8000
+max_attempts: 2
+timeout_seconds: 900

@@ -61,8 +61,10 @@ CATNIP_SETTLE_HOURS={settle_hours}
 # safe to trim: every day in it is in the store at its settled value.
 CATNIP_SETTLE_LOG_DAYS={settle_log_days}
 
-# Timer cadence (systemd OnCalendar syntax) and jitter. Daily is the
-# floor that keeps the 14-day traffic window from developing holes.
+# Timer cadence (systemd OnCalendar syntax) and jitter. Daily is the floor
+# that keeps the 14-day traffic window from developing holes; every six
+# hours places a late arrival to within six rather than within a day. The
+# jitter is additive — the OnCalendar time is the earliest start.
 CATNIP_TIMER_ONCALENDAR={oncalendar}
 CATNIP_TIMER_RANDOM_DELAY={random_delay}
 """
